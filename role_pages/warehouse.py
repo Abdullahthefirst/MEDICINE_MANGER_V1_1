@@ -7,6 +7,7 @@ from utils.auth import (
     get_authenticated_client,
     get_site_id,
 )
+from utils.errors import friendly_error
 from utils.ui import page_header
 
 
@@ -262,7 +263,7 @@ def render_add_inventory():
 
         except Exception as exc:
             st.error(
-                f"Unable to add inventory: {exc}"
+                friendly_error(exc)
             )
 
 
@@ -539,7 +540,7 @@ def render_transfers():
 def render_issues():
     page_header(
         "Kit Component Issues",
-        "Review component defects reported by hospitals",
+        "Review and resolve component defects reported by hospitals",
     )
 
     try:
@@ -554,118 +555,147 @@ def render_issues():
         return
 
     if not issues:
-        st.success("No open kit component issues.")
+        st.success(
+            "There are no open kit component issues."
+        )
         return
 
-    df = pd.DataFrame(issues)
-
-    preferred = [
-        "issue_id",
-        "event_date",
-        "hospital",
-        "kit_id",
-        "kit_type",
-        "component_name",
-        "catalogue_number",
-        "runs_affected",
-        "description",
-        "reported_by",
-    ]
-
-    cols = [
-        col for col in preferred
-        if col in df.columns
-    ]
-
-    st.dataframe(
-        df[cols],
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    st.divider()
-
-    st.subheader("Resolve Issue")
-
-    unique_issues = {}
+    grouped = {}
 
     for row in issues:
         issue_id = row["issue_id"]
 
-        if issue_id not in unique_issues:
-            unique_issues[issue_id] = {
+        if issue_id not in grouped:
+            grouped[issue_id] = {
+                "issue_id": issue_id,
                 "kit_id": row.get("kit_id"),
-                "hospital": row.get("hospital"),
                 "kit_type": row.get("kit_type"),
+                "hospital": row.get("hospital"),
+                "event_date": row.get("event_date"),
+                "runs_affected": row.get("runs_affected"),
+                "description": row.get("description"),
+                "components": [],
             }
 
-    issue_labels = {
-        f'Issue #{issue_id} — '
-        f'{info["kit_id"]} — '
-        f'{info["hospital"]}':
-        issue_id
-
-        for issue_id, info
-        in unique_issues.items()
-    }
-
-    templates = fetch_data(
-        "template_components",
-        "id,component_name,catalogue_number,is_active",
-    )
-
-    active_components = [
-        row for row in templates
-        if row.get("is_active")
-    ]
-
-    component_lookup = {
-        (
-            f'{row["component_name"]}'
-            + (
-                f' ({row["catalogue_number"]})'
-                if row.get("catalogue_number")
-                else ""
-            )
-        ):
-        row["id"]
-
-        for row in active_components
-    }
-
-    with st.form("resolve_issue_form"):
-        issue_label = st.selectbox(
-            "Issue",
-            list(issue_labels.keys()),
+        grouped[issue_id]["components"].append(
+            {
+                "kit_component_id": row.get("kit_component_id"),
+                "component_name": row.get("component_name"),
+                "catalogue_number": row.get("catalogue_number"),
+                "component_status": row.get("component_status"),
+            }
         )
 
-        replacement_label = st.selectbox(
-            "Replacement Component",
+    issue_lookup = {}
+
+    for issue_id, issue in grouped.items():
+        label = (
+            f'Issue #{issue_id} — '
+            f'{issue["kit_id"]} — '
+            f'{issue["hospital"]}'
+        )
+
+        issue_lookup[label] = issue
+
+    selected_label = st.selectbox(
+        "Select Issue",
+        list(issue_lookup.keys()),
+    )
+
+    issue = issue_lookup[selected_label]
+
+    st.divider()
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    c1.metric("Kit ID", issue["kit_id"])
+    c2.metric("Kit Type", issue["kit_type"])
+    c3.metric("Hospital", issue["hospital"])
+    c4.metric("Affected Runs", issue["runs_affected"])
+
+    st.write(f"**Reported Date:** {issue['event_date']}")
+
+    if issue.get("description"):
+        st.write(f"**Description:** {issue['description']}")
+
+    st.subheader("Defective Components")
+
+    component_df = pd.DataFrame(issue["components"])
+
+    display_columns = [
+        "component_name",
+        "catalogue_number",
+        "component_status",
+    ]
+
+    st.dataframe(
+        component_df[
+            [
+                c for c in display_columns
+                if c in component_df.columns
+            ]
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    unresolved = [
+        component
+        for component in issue["components"]
+        if component.get("component_status") in (
+            "DEFECTIVE",
+            "REPLACEMENT_PENDING",
+        )
+    ]
+
+    if not unresolved:
+        st.info(
+            "All components for this issue have already been resolved."
+        )
+        return
+
+    st.divider()
+    st.subheader("Confirm Replacement")
+    st.caption(
+        "Resolve each defective component individually. The kit will become available again only after every defective component in this issue has been resolved."
+    )
+
+    component_lookup = {}
+
+    for component in unresolved:
+        label = component.get("component_name", "Unknown Component")
+        catalogue = component.get("catalogue_number")
+
+        if catalogue:
+            label += f" ({catalogue})"
+
+        component_lookup[label] = component["kit_component_id"]
+
+    with st.form("resolve_issue_component_form"):
+        selected_component = st.selectbox(
+            "Component Being Replaced",
             list(component_lookup.keys()),
         )
 
         quantity = st.number_input(
-            "Quantity",
+            "Replacement Quantity",
             min_value=1,
             value=1,
             step=1,
         )
 
         resolution_date = st.date_input(
-            "Resolution Date",
+            "Replacement / Resolution Date",
             value=date.today(),
         )
 
         notes = st.text_area(
             "Resolution Notes",
-            placeholder=(
-                "Example: replacement component "
-                "supplied to hospital"
-            ),
+            placeholder="Example: Replacement supplied and confirmed.",
         )
 
         submitted = st.form_submit_button(
-            "Resolve Issue",
+            "Confirm Replacement",
             use_container_width=True,
         )
 
@@ -674,36 +704,30 @@ def render_issues():
             supabase = get_authenticated_client()
 
             supabase.rpc(
-                "resolve_kit_issue",
+                "resolve_kit_issue_component",
                 {
-                    "p_issue_id":
-                        issue_labels[issue_label],
-
-                    "p_replacement_component_id":
-                        component_lookup[
-                            replacement_label
-                        ],
-
-                    "p_quantity":
-                        int(quantity),
-
-                    "p_resolution_date":
-                        resolution_date.isoformat(),
-
-                    "p_notes":
-                        notes.strip() or None,
+                    "p_issue_id": issue["issue_id"],
+                    "p_kit_component_id": component_lookup[selected_component],
+                    "p_quantity": int(quantity),
+                    "p_resolution_date": resolution_date.isoformat(),
+                    "p_notes": notes.strip() or None,
                 },
             ).execute()
 
-            st.success(
-                "Kit issue resolved successfully."
-            )
+            if len(unresolved) > 1:
+                st.success(
+                    "Replacement recorded. This issue still has other defective components awaiting replacement."
+                )
+            else:
+                st.success(
+                    "Final defective component resolved. The issue is now closed and the kit is available for use again."
+                )
 
             st.rerun()
 
         except Exception as exc:
             st.error(
-                f"Unable to resolve issue: {exc}"
+                f"Unable to resolve component: {exc}"
             )
 
 
@@ -741,9 +765,14 @@ def render_expiry():
             st.error(
                 f"Unable to load kit expiry alerts: {exc}"
             )
-            alerts = []
+            return
 
-        if alerts:
+        if not alerts:
+            st.success(
+                "No warehouse kit expiry alerts."
+            )
+
+        else:
             df = pd.DataFrame(alerts)
 
             if "days_to_expiry" in df.columns:
@@ -757,67 +786,163 @@ def render_expiry():
                 hide_index=True,
             )
 
-            kit_lookup = {
-                f'{row["kit_id"]} — '
-                f'{row.get("kit_type", "") }':
-                row.get("kit_pk") or row.get("id")
+            expired = [
+                row for row in alerts
+                if row.get("expiry_category") == "EXPIRED"
+            ]
 
-                for row in alerts
-            }
-
-            st.subheader("Mark Kit as Expired")
-
-            with st.form(
-                "warehouse_mark_kit_expired"
-            ):
-                kit_label = st.selectbox(
-                    "Kit",
-                    list(kit_lookup.keys()),
+            if expired:
+                st.divider()
+                st.subheader("Expired Kits Requiring Action")
+                st.caption(
+                    "Only kits whose expiry date has already passed can be marked expired."
                 )
 
-                reason = st.text_area(
-                    "Reason",
-                    placeholder=(
-                        "Example: expiry confirmed "
-                        "during stock review"
-                    ),
-                )
+                kit_lookup = {
+                    (
+                        f'{row["kit_id"]} — '
+                        f'{row.get("kit_type", "")} — '
+                        f'{row.get("expiry_date", "")}'
+                    ): row.get("kit_pk") or row.get("id")
+                    for row in expired
+                }
 
-                mark = st.form_submit_button(
-                    "Mark as Expired",
-                    use_container_width=True,
-                )
-
-            if mark:
-                try:
-                    supabase = get_authenticated_client()
-
-                    supabase.rpc(
-                        "mark_kit_expired",
-                        {
-                            "p_kit_id":
-                                kit_lookup[kit_label],
-
-                            "p_reason":
-                                reason.strip() or None,
-                        },
-                    ).execute()
-
-                    st.success(
-                        "Kit marked as expired."
+                with st.form("warehouse_expire_kit"):
+                    selected = st.selectbox(
+                        "Expired Kit",
+                        list(kit_lookup.keys()),
                     )
 
-                    st.rerun()
-
-                except Exception as exc:
-                    st.error(
-                        f"Unable to mark kit expired: {exc}"
+                    reason = st.text_area(
+                        "Reason / Notes",
+                        placeholder="Optional expiry notes",
                     )
+
+                    submitted = st.form_submit_button(
+                        "Mark Kit as Expired",
+                        use_container_width=True,
+                    )
+
+                if submitted:
+                    try:
+                        supabase = get_authenticated_client()
+
+                        supabase.rpc(
+                            "mark_kit_expired",
+                            {
+                                "p_kit_id": kit_lookup[selected],
+                                "p_reason": reason.strip() or None,
+                            },
+                        ).execute()
+
+                        st.success("Kit marked as expired.")
+                        st.rerun()
+
+                    except Exception as exc:
+                        st.error(
+                            f"Unable to mark kit expired: {exc}"
+                        )
+
+            else:
+                st.info(
+                    "These kits are approaching expiry, but none have expired yet."
+                )
+
+    with tab2:
+        try:
+            alerts = fetch_data(
+                "component_expiry_alerts"
+            )
+
+            alerts = [
+                row for row in alerts
+                if row.get("site_id") == warehouse_id
+            ]
+
+        except Exception as exc:
+            st.error(
+                f"Unable to load component expiry alerts: {exc}"
+            )
+            return
+
+        if not alerts:
+            st.success(
+                "No warehouse component expiry alerts."
+            )
 
         else:
-            st.success(
-                "No warehouse kit expiry alerts."
+            df = pd.DataFrame(alerts)
+
+            if "days_to_expiry" in df.columns:
+                df = df.sort_values(
+                    "days_to_expiry"
+                )
+
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True,
             )
+
+            expired = [
+                row for row in alerts
+                if row.get("expiry_category") == "EXPIRED"
+            ]
+
+            if expired:
+                st.divider()
+                st.subheader("Expired Components Requiring Action")
+
+                component_lookup = {}
+
+                for row in expired:
+                    label = (
+                        f'{row.get("kit_id", "")} — '
+                        f'{row.get("component_name", "")}'
+                    )
+
+                    component_lookup[label] = row.get("kit_component_id")
+
+                with st.form("warehouse_expire_component"):
+                    selected = st.selectbox(
+                        "Expired Component",
+                        list(component_lookup.keys()),
+                    )
+
+                    reason = st.text_area(
+                        "Reason / Notes",
+                        placeholder="Optional",
+                    )
+
+                    submitted = st.form_submit_button(
+                        "Mark Component as Expired",
+                        use_container_width=True,
+                    )
+
+                if submitted:
+                    try:
+                        supabase = get_authenticated_client()
+
+                        supabase.rpc(
+                            "mark_component_expired",
+                            {
+                                "p_kit_component_id": component_lookup[selected],
+                                "p_reason": reason.strip() or None,
+                            },
+                        ).execute()
+
+                        st.success("Component marked as expired.")
+                        st.rerun()
+
+                    except Exception as exc:
+                        st.error(
+                            f"Unable to mark component expired: {exc}"
+                        )
+
+            else:
+                st.info(
+                    "These components are approaching expiry, but none have expired yet."
+                )
 
     with tab2:
         try:

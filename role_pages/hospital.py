@@ -615,13 +615,9 @@ def render_production():
             "id,hospital_site_id,event_date",
         )
 
-        inventory = fetch_data(
-            "hospital_inventory"
-        )
-
     except Exception as exc:
         st.error(
-            f"Unable to load production data: {exc}"
+            f"Unable to load production information: {exc}"
         )
         return
 
@@ -630,39 +626,20 @@ def render_production():
     for row in summaries:
         if (
             row.get("hospital_site_id") == hospital_id
-            and str(row.get("event_date"))
-                == run_date.isoformat()
+            and str(row.get("event_date")) == run_date.isoformat()
         ):
             summary_id = row.get("id")
             break
 
-    inventory = [
-        row for row in inventory
-        if row.get("site_id") == hospital_id
-    ]
-
-    kit_options = ["No Kit"]
-
-    kit_lookup = {}
-
-    for row in inventory:
-        label = (
-            f'{row["kit_id"]} — '
-            f'{row["kit_type"]}'
+    if summary_id is None:
+        st.warning(
+            "No Daily Summary exists for this date. Go to Daily Summary and save it before recording production runs."
         )
-
-        kit_options.append(label)
-        kit_lookup[label] = row["kit_pk"]
 
     with st.form("production_run_form"):
         machine = st.selectbox(
             "Machine",
             ["ABT", "TRASIS"],
-        )
-
-        selected_kit = st.selectbox(
-            "Kit ID",
-            kit_options,
         )
 
         run_number = st.number_input(
@@ -705,54 +682,43 @@ def render_production():
         submitted = st.form_submit_button(
             "Record Production Run",
             use_container_width=True,
+            disabled=summary_id is None,
         )
 
     if submitted:
+        if activity_lost > activity_mci:
+            st.error(
+                "Activity lost cannot be greater than the activity produced/received."
+            )
+            return
+
         try:
             supabase = get_authenticated_client()
 
             supabase.rpc(
                 "record_production_run",
                 {
-                    "p_daily_summary_id":
-                        summary_id,
-
-                    "p_machine":
-                        machine,
-
-                    "p_kit_id":
-                        (
-                            None
-                            if selected_kit == "No Kit"
-                            else kit_lookup[selected_kit]
-                        ),
-
-                    "p_run_number":
-                        int(run_number),
-
-                    "p_activity_mci":
-                        float(activity_mci),
-
-                    "p_outcome":
-                        outcome,
-
-                    "p_activity_lost_mci":
-                        float(activity_lost),
-
-                    "p_notes":
-                        notes.strip() or None,
+                    "p_daily_summary_id": summary_id,
+                    "p_machine": machine,
+                    "p_kit_id": None,
+                    "p_run_number": int(run_number),
+                    "p_activity_mci": float(activity_mci),
+                    "p_outcome": outcome,
+                    "p_activity_lost_mci": float(activity_lost),
+                    "p_notes": notes.strip() or None,
                 },
             ).execute()
 
             st.success(
-                "Production run recorded."
+                f"{machine} Run #{int(run_number)} recorded successfully."
             )
-
             st.rerun()
 
         except Exception as exc:
+            from utils.errors import friendly_error
+
             st.error(
-                f"Unable to record production run: {exc}"
+                friendly_error(exc)
             )
 
 
@@ -1140,7 +1106,7 @@ def render_downtime():
 def render_expiry():
     page_header(
         "Expiry Alerts",
-        "Kits and components approaching expiry",
+        "Hospital kits and components approaching expiry",
     )
 
     hospital_id = get_site_id()
@@ -1167,9 +1133,14 @@ def render_expiry():
             st.error(
                 f"Unable to load kit expiry alerts: {exc}"
             )
-            alerts = []
+            return
 
-        if alerts:
+        if not alerts:
+            st.success(
+                "No hospital kit expiry alerts."
+            )
+
+        else:
             df = pd.DataFrame(alerts)
 
             if "days_to_expiry" in df.columns:
@@ -1183,10 +1154,69 @@ def render_expiry():
                 hide_index=True,
             )
 
-        else:
-            st.success(
-                "No hospital kit expiry alerts."
-            )
+            expired = [
+                row for row in alerts
+                if row.get("expiry_category") == "EXPIRED"
+            ]
+
+            if expired:
+                st.divider()
+                st.subheader(
+                    "Expired Kits Requiring Action"
+                )
+                st.caption(
+                    "Only kits whose expiry date has already passed can be marked expired."
+                )
+
+                kit_lookup = {
+                    (
+                        f'{row["kit_id"]} — '
+                        f'{row.get("kit_type", "")} — '
+                        f'{row.get("expiry_date", "")}'
+                    ): row.get("kit_pk") or row.get("id")
+                    for row in expired
+                }
+
+                with st.form("hospital_expire_kit"):
+                    selected = st.selectbox(
+                        "Expired Kit",
+                        list(kit_lookup.keys()),
+                    )
+
+                    reason = st.text_area(
+                        "Reason / Notes",
+                        placeholder="Optional",
+                    )
+
+                    submitted = st.form_submit_button(
+                        "Mark Kit as Expired",
+                        use_container_width=True,
+                    )
+
+                if submitted:
+                    try:
+                        supabase = get_authenticated_client()
+
+                        supabase.rpc(
+                            "mark_kit_expired",
+                            {
+                                "p_kit_id": kit_lookup[selected],
+                                "p_reason": reason.strip() or None,
+                            },
+                        ).execute()
+
+                        st.success("Kit marked as expired.")
+                        st.rerun()
+
+                    except Exception as exc:
+                        st.error(
+                            f"Unable to mark kit expired: {exc}"
+                        )
+
+            else:
+                st.info(
+                    "Expiry warnings are shown above. No kit has actually expired yet."
+                )
 
     with tab2:
         try:
@@ -1203,9 +1233,14 @@ def render_expiry():
             st.error(
                 f"Unable to load component expiry alerts: {exc}"
             )
-            alerts = []
+            return
 
-        if alerts:
+        if not alerts:
+            st.success(
+                "No hospital component expiry alerts."
+            )
+
+        else:
             df = pd.DataFrame(alerts)
 
             if "days_to_expiry" in df.columns:
@@ -1219,10 +1254,67 @@ def render_expiry():
                 hide_index=True,
             )
 
-        else:
-            st.success(
-                "No hospital component expiry alerts."
-            )
+            expired = [
+                row for row in alerts
+                if row.get("expiry_category") == "EXPIRED"
+            ]
+
+            if expired:
+                st.divider()
+                st.subheader(
+                    "Expired Components Requiring Action"
+                )
+
+                component_lookup = {}
+
+                for row in expired:
+                    label = (
+                        f'{row.get("kit_id", "")} — '
+                        f'{row.get("component_name", "")}'
+                    )
+
+                    component_lookup[label] = row.get("kit_component_id")
+
+                with st.form("hospital_expire_component"):
+                    selected = st.selectbox(
+                        "Expired Component",
+                        list(component_lookup.keys()),
+                    )
+
+                    reason = st.text_area(
+                        "Reason / Notes",
+                        placeholder="Optional",
+                    )
+
+                    submitted = st.form_submit_button(
+                        "Mark Component as Expired",
+                        use_container_width=True,
+                    )
+
+                if submitted:
+                    try:
+                        supabase = get_authenticated_client()
+
+                        supabase.rpc(
+                            "mark_component_expired",
+                            {
+                                "p_kit_component_id": component_lookup[selected],
+                                "p_reason": reason.strip() or None,
+                            },
+                        ).execute()
+
+                        st.success("Component marked as expired.")
+                        st.rerun()
+
+                    except Exception as exc:
+                        st.error(
+                            f"Unable to mark component expired: {exc}"
+                        )
+
+            else:
+                st.info(
+                    "Expiry warnings are shown above. No component has actually expired yet."
+                )
 
 
 def render_reports():

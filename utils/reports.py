@@ -363,142 +363,127 @@ def show_kit_usage_report():
     st.subheader("Kit Consumption")
 
     try:
-        data = fetch_data(
+        usage = fetch_data(
             "kit_usage",
             "id,event_date,runs_used,kit_id,"
             "daily_summary_id,created_at",
         )
 
         kits = fetch_data(
-            "kit_traceability"
+            "kits",
+            "id,kit_id,template_id,site_id,status",
+        )
+
+        templates = fetch_data(
+            "inventory_templates",
+            "id,name",
+        )
+
+        summaries = fetch_data(
+            "daily_hospital_summaries",
+            "id,hospital_site_id,event_date",
+        )
+
+        sites = fetch_data(
+            "sites",
+            "id,name",
         )
 
     except Exception as exc:
         st.error(
-            f"Unable to load kit usage report: {exc}"
+            f"Unable to load Kit Consumption report: {exc}"
         )
         return
 
-    if not data:
-        st.info("No kit usage records available.")
+    if not usage:
+        st.info(
+            "No kit usage has been recorded yet."
+        )
         return
 
-    kit_map = {
-        row["kit_pk"]: {
-            "kit_id": row.get("kit_id"),
-            "kit_type": row.get("kit_type"),
-            "current_site": row.get("current_site"),
-        }
+    template_lookup = {
+        row["id"]: row["name"]
+        for row in templates
+    }
+
+    site_lookup = {
+        row["id"]: row["name"]
+        for row in sites
+    }
+
+    kit_lookup = {
+        row["id"]: row
         for row in kits
+    }
+
+    summary_lookup = {
+        row["id"]: row
+        for row in summaries
     }
 
     rows = []
 
-    for row in data:
-        info = kit_map.get(
-            row.get("kit_id"),
-            {},
+    for record in usage:
+        summary = summary_lookup.get(
+            record.get("daily_summary_id")
         )
+
+        if not summary:
+            continue
+
+        if get_role() == "hospital_manager":
+            if summary.get("hospital_site_id") != get_site_id():
+                continue
+
+        kit = kit_lookup.get(record.get("kit_id"))
+
+        if not kit:
+            continue
 
         rows.append(
             {
-                "event_date": row.get(
-                    "event_date"
+                "Date": record.get("event_date"),
+                "Hospital": site_lookup.get(
+                    summary.get("hospital_site_id"),
+                    "Unknown",
                 ),
-                "kit_id": info.get(
-                    "kit_id"
+                "Kit ID": kit.get("kit_id"),
+                "Kit Type": template_lookup.get(
+                    kit.get("template_id"),
+                    "Unknown",
                 ),
-                "kit_type": info.get(
-                    "kit_type"
-                ),
-                "site": info.get(
-                    "current_site"
-                ),
-                "runs_used": row.get(
-                    "runs_used"
-                ),
+                "Runs Used": record.get("runs_used", 0),
             }
         )
+
+    if not rows:
+        st.info(
+            "No kit consumption records are available for your account."
+        )
+        return
 
     df = pd.DataFrame(rows)
 
-    if get_role() == "hospital_manager":
-        hospital_id = get_site_id()
-
-        try:
-            summaries = fetch_data(
-                "daily_hospital_summaries",
-                "id,hospital_site_id",
-            )
-
-            permitted_summary_ids = {
-                row["id"]
-                for row in summaries
-                if row.get("hospital_site_id")
-                == hospital_id
-            }
-
-            original = pd.DataFrame(data)
-
-            allowed_usage_ids = set(
-                original[
-                    original["daily_summary_id"]
-                    .isin(permitted_summary_ids)
-                ]["id"]
-            )
-
-            if allowed_usage_ids:
-                df = df.iloc[
-                    [
-                        i
-                        for i, row
-                        in enumerate(data)
-                        if row["id"]
-                        in allowed_usage_ids
-                    ]
-                ]
-
-        except Exception:
-            pass
-
-    total_runs_used = (
-        df["runs_used"].sum()
-        if "runs_used" in df.columns
-        else 0
-    )
+    total_runs = int(df["Runs Used"].sum())
+    unique_kits = df["Kit ID"].dropna().nunique()
 
     c1, c2 = st.columns(2)
+    c1.metric("Total Runs Used", total_runs)
+    c2.metric("Kits Used", unique_kits)
 
-    c1.metric(
-        "Usage Transactions",
-        len(df),
+    by_type = (
+        df.groupby("Kit Type", as_index=False)["Runs Used"]
+        .sum()
     )
 
-    c2.metric(
-        "Total Runs Used",
-        int(total_runs_used),
+    st.bar_chart(
+        by_type,
+        x="Kit Type",
+        y="Runs Used",
     )
-
-    if (
-        "kit_type" in df.columns
-        and not df.empty
-    ):
-        by_type = (
-            df.groupby("kit_type")[
-                "runs_used"
-            ]
-            .sum()
-            .reset_index()
-        )
-
-        st.bar_chart(
-            by_type,
-            x="kit_type",
-            y="runs_used",
-        )
 
     st.dataframe(
-        df,
+        df.sort_values("Date", ascending=False),
         use_container_width=True,
         hide_index=True,
     )
