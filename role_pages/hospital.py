@@ -1023,115 +1023,47 @@ def render_report_issue():
 def render_issues():
     page_header(
         "Kit & Component Issues",
-        "Track reported kit problems and confirm replacement components",
+        "Track reported kit issues and whole-issue replacement status",
     )
 
     hospital_id = get_site_id()
 
     try:
-        data = fetch_data("kit_issue_component_status")
+        open_issues = fetch_data("open_kit_issues")
+        raw_issues = fetch_data("kit_issues")
     except Exception as exc:
         st.error(f"Unable to load issue information: {exc}")
         return
 
-    data = [row for row in data if row.get("hospital_site_id") == hospital_id]
+    open_issues = [
+        row for row in open_issues if row.get("hospital_site_id") == hospital_id
+    ]
 
-    tab1, tab2 = st.tabs(["Kit Issues", "Component Issues"])
+    issue_lookup = {row["id"]: row for row in raw_issues}
 
-    with tab1:
-        if not data:
-            st.info("No kit issues have been reported.")
-        else:
-            df = pd.DataFrame(data)
-            issue_columns = [
-                "issue_id",
-                "kit_id",
-                "kit_type",
-                "event_date",
-                "runs_affected",
-                "issue_status",
-                "description",
-            ]
-            issue_df = (
-                df[[c for c in issue_columns if c in df.columns]]
-                .drop_duplicates(subset=["issue_id"])
-            )
-            st.dataframe(issue_df, use_container_width=True, hide_index=True)
+    if not open_issues:
+        st.info("No open kit issues have been reported for this hospital.")
+        return
 
-    with tab2:
-        if not data:
-            st.info("No component issues have been reported.")
-            return
-
-        df = pd.DataFrame(data)
-        component_columns = [
-            "issue_id",
-            "kit_id",
-            "component_name",
-            "catalogue_number",
-            "runs_affected",
-            "component_resolution_status",
-            "warehouse_resolution_date",
-            "warehouse_notes",
-            "hospital_confirmed_at",
-        ]
-
-        st.dataframe(
-            df[[c for c in component_columns if c in df.columns]],
-            use_container_width=True,
-            hide_index=True,
+    rows = []
+    for row in open_issues:
+        raw = issue_lookup.get(row.get("issue_id"), {})
+        rows.append(
+            {
+                "Issue ID": row.get("issue_id"),
+                "Kit ID": row.get("kit_id"),
+                "Kit Type": row.get("kit_type"),
+                "Issue Date": row.get("event_date"),
+                "Affected Runs": row.get("runs_affected"),
+                "Description": row.get("description"),
+                "Resolution Status": raw.get("resolution_status", "OPEN"),
+                "Items Sent Date": raw.get("warehouse_resolution_date"),
+                "Hospital Confirmed": "Yes" if raw.get("hospital_confirmed_at") else "No",
+            }
         )
 
-        pending = [
-            row for row in data
-            if row.get("component_resolution_status") == "AWAITING_HOSPITAL_CONFIRMATION"
-        ]
-
-        if not pending:
-            st.info("No replacement components are currently waiting for your confirmation.")
-            return
-
-        st.divider()
-        st.subheader("Confirm Replacement Received")
-        st.warning("Confirm only after the replacement component has physically arrived and is acceptable.")
-
-        option_lookup = {}
-        for row in pending:
-            label = (
-                f'{row["kit_id"]} — '
-                f'{row["component_name"]} — '
-                f'Issue #{row["issue_id"]}'
-            )
-            option_lookup[label] = row
-
-        selected_label = st.selectbox("Replacement", list(option_lookup.keys()))
-        selected = option_lookup[selected_label]
-
-        st.write(f'**Kit:** {selected["kit_id"]}')
-        st.write(f'**Component:** {selected["component_name"]}')
-        st.write(f'**Warehouse replacement date:** {selected.get("warehouse_resolution_date", "")}')
-
-        if selected.get("warehouse_notes"):
-            st.info(selected["warehouse_notes"])
-
-        confirm = st.button("Confirm Replacement Received", type="primary", use_container_width=True)
-
-        if confirm:
-            try:
-                supabase = get_authenticated_client()
-                supabase.rpc(
-                    "confirm_kit_issue_component",
-                    {
-                        "p_issue_id": selected["issue_id"],
-                        "p_kit_component_id": selected["kit_component_id"],
-                    },
-                ).execute()
-                st.success(
-                    "Replacement confirmed. If this was the final unresolved component, the kit is now available again."
-                )
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Unable to confirm replacement: {exc}")
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 # =========================================================

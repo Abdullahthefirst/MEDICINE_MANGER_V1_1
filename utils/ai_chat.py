@@ -81,8 +81,9 @@ SOURCE_TABLES = {
     ],
 
     "issues": [
-        "kit_issue_component_status",
+        "open_kit_issues",
         "kit_issue_history",
+        "kit_issues",
     ],
 
     "patients": [

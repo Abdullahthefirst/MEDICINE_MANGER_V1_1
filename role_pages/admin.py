@@ -332,70 +332,211 @@ def render_transfers():
 def render_issues():
     page_header(
         "Kit & Component Issues",
-        "Monitor reported defects and replacement confirmations",
+        "Monitor reported kit issues and replacement status across all hospitals",
     )
 
     try:
-        data = fetch_data("kit_issue_component_status")
+        open_issues = fetch_data(
+            "open_kit_issues"
+        )
+
+        history = fetch_data(
+            "kit_issue_history"
+        )
+
+        raw_issues = fetch_data(
+            "kit_issues"
+        )
+
     except Exception as exc:
-        st.error(f"Unable to load issue information: {exc}")
+        st.error(
+            f"Unable to load issue information: {exc}"
+        )
         return
 
-    if not data:
-        st.info("No kit or component issues have been reported.")
-        return
+    # -----------------------------------------------------
+    # Resolution information from kit_issues
+    # -----------------------------------------------------
 
-    df = pd.DataFrame(data)
+    resolution_lookup = {
+        row["id"]: row
+        for row in raw_issues
+    }
 
-    tab1, tab2 = st.tabs([
-        "Kit Issues",
-        "Component Issues",
-    ])
+    tab1, tab2, tab3 = st.tabs(
+        [
+            "Open Issues",
+            "Components",
+            "Issue History",
+        ]
+    )
+
+    # =====================================================
+    # OPEN ISSUES
+    # =====================================================
 
     with tab1:
-        issue_columns = [
-            "issue_id",
-            "kit_id",
-            "kit_type",
-            "event_date",
-            "runs_affected",
-            "issue_status",
-            "description",
-        ]
 
-        issue_df = (
-            df[
-                [c for c in issue_columns if c in df.columns]
-            ]
-            .drop_duplicates(subset=["issue_id"])
-        )
+        if not open_issues:
+            st.success(
+                "There are no open kit issues."
+            )
 
-        st.dataframe(
-            issue_df,
-            use_container_width=True,
-            hide_index=True,
-        )
+        else:
+            grouped = {}
+
+            for row in open_issues:
+
+                issue_id = row.get("issue_id")
+
+                if issue_id not in grouped:
+
+                    raw = resolution_lookup.get(
+                        issue_id,
+                        {},
+                    )
+
+                    grouped[issue_id] = {
+                        "Issue ID":
+                            issue_id,
+
+                        "Hospital":
+                            row.get("hospital"),
+
+                        "Kit ID":
+                            row.get("kit_id"),
+
+                        "Kit Type":
+                            row.get("kit_type"),
+
+                        "Issue Date":
+                            row.get("event_date"),
+
+                        "Affected Runs":
+                            row.get("runs_affected"),
+
+                        "Description":
+                            row.get("description"),
+
+                        "Resolution Status":
+                            raw.get(
+                                "resolution_status",
+                                "OPEN",
+                            ),
+
+                        "Items Sent Date":
+                            raw.get(
+                                "warehouse_resolution_date"
+                            ),
+
+                        "Hospital Confirmed":
+                            (
+                                "Yes"
+                                if raw.get(
+                                    "hospital_confirmed_at"
+                                )
+                                else "No"
+                            ),
+                    }
+
+            df = pd.DataFrame(
+                grouped.values()
+            )
+
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    # =====================================================
+    # COMPONENTS
+    # =====================================================
 
     with tab2:
-        component_columns = [
-            "issue_id",
-            "kit_id",
-            "component_name",
-            "catalogue_number",
-            "runs_affected",
-            "component_resolution_status",
-            "warehouse_resolution_date",
-            "warehouse_notes",
-            "hospital_confirmed_at",
-        ]
 
-        st.dataframe(
-            df[
-                [c for c in component_columns if c in df.columns]
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
+        if not open_issues:
+            st.info(
+                "No component issues are currently open."
+            )
+
+        else:
+            rows = []
+
+            for row in open_issues:
+
+                raw = resolution_lookup.get(
+                    row.get("issue_id"),
+                    {},
+                )
+
+                rows.append(
+                    {
+                        "Issue ID":
+                            row.get("issue_id"),
+
+                        "Hospital":
+                            row.get("hospital"),
+
+                        "Kit ID":
+                            row.get("kit_id"),
+
+                        "Component":
+                            row.get(
+                                "component_name"
+                            ),
+
+                        "Catalogue Number":
+                            row.get(
+                                "catalogue_number"
+                            ),
+
+                        "Affected Runs":
+                            row.get(
+                                "runs_affected"
+                            ),
+
+                        "Resolution Status":
+                            raw.get(
+                                "resolution_status",
+                                "OPEN",
+                            ),
+                    }
+                )
+
+            df = pd.DataFrame(rows)
+
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    # =====================================================
+    # HISTORY
+    # =====================================================
+
+    with tab3:
+
+        if not history:
+            st.info(
+                "No issue history is available."
+            )
+
+        else:
+            df = pd.DataFrame(history)
+
+            if "event_date" in df.columns:
+                df = df.sort_values(
+                    "event_date",
+                    ascending=False,
+                )
+
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 # ---------------------------------------------------------
@@ -1033,7 +1174,7 @@ def render_export_data():
         "Production Failures": "production_failures",
         "Daily Hospital Summaries": "daily_hospital_summaries",
         "Kit Issues": "kit_issue_history",
-        "Component Issues": "kit_issue_component_status",
+        "Component Issues": "open_kit_issues",
         "Downtime": "downtime_report",
         "Backdated Entries": "admin_backdated_entries_with_review",
         "Audit Log": "audit_log",
