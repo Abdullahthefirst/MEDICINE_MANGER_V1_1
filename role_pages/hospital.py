@@ -1,24 +1,1273 @@
 import streamlit as st
+import pandas as pd
+from datetime import date
 
-from utils.auth import require_role
+from utils.auth import (
+    require_role,
+    get_authenticated_client,
+    get_site_id,
+)
 from utils.ui import page_header
 
+
+def fetch_data(table, columns="*"):
+    supabase = get_authenticated_client()
+
+    response = (
+        supabase
+        .table(table)
+        .select(columns)
+        .execute()
+    )
+
+    return response.data or []
+
+
+def show_dataframe(data, empty_message="No records found."):
+    if not data:
+        st.info(empty_message)
+        return
+
+    st.dataframe(
+        pd.DataFrame(data),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# =========================================================
+# OVERVIEW
+# =========================================================
+
+def render_overview():
+    page_header(
+        "Hospital Dashboard",
+        "Inventory, daily usage, production and equipment monitoring",
+    )
+
+    hospital_id = get_site_id()
+
+    try:
+        inventory = fetch_data("hospital_inventory")
+        transfers = fetch_data("pending_transfers")
+        issues = fetch_data("open_kit_issues")
+        expiry = fetch_data("kit_expiry_alerts")
+
+    except Exception as exc:
+        st.error(f"Unable to load dashboard: {exc}")
+        return
+
+    inventory = [
+        row for row in inventory
+        if row.get("site_id") == hospital_id
+    ]
+
+    transfers = [
+        row for row in transfers
+        if row.get("destination_site_id") == hospital_id
+        and not row.get("received")
+    ]
+
+    issues = [
+        row for row in issues
+        if row.get("hospital_site_id") == hospital_id
+    ]
+
+    expiry = [
+        row for row in expiry
+        if row.get("site_id") == hospital_id
+    ]
+
+    available = len([
+        row for row in inventory
+        if row.get("status") == "HOSPITAL_AVAILABLE"
+    ])
+
+    issue_count = len({
+        row.get("issue_id")
+        for row in issues
+    })
+
+    pending_receipt = len(transfers)
+    expiry_count = len(expiry)
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    c1.metric("Available Kits", available)
+    c2.metric("Pending Receipt", pending_receipt)
+    c3.metric("Open Kit Issues", issue_count)
+    c4.metric("Expiry Alerts", expiry_count)
+
+    st.divider()
+
+    left, right = st.columns(2)
+
+    with left:
+        st.subheader("Inventory")
+
+        if inventory:
+            df = pd.DataFrame(inventory)
+
+            wanted = [
+                "kit_id",
+                "kit_type",
+                "status",
+                "runs_remaining",
+                "expiry_date",
+            ]
+
+            cols = [
+                c for c in wanted
+                if c in df.columns
+            ]
+
+            st.dataframe(
+                df[cols].head(10),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        else:
+            st.info("No hospital inventory.")
+
+    with right:
+        st.subheader("Open Kit Issues")
+
+        if issues:
+            df = pd.DataFrame(issues)
+
+            wanted = [
+                "kit_id",
+                "component_name",
+                "runs_affected",
+                "event_date",
+            ]
+
+            cols = [
+                c for c in wanted
+                if c in df.columns
+            ]
+
+            st.dataframe(
+                df[cols].head(10),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        else:
+            st.success("No open kit issues.")
+
+
+# =========================================================
+# CONFIRM RECEIVING
+# =========================================================
+
+def render_receiving():
+    page_header(
+        "Confirm Receiving",
+        "Confirm kits physically received from the warehouse",
+    )
+
+    hospital_id = get_site_id()
+
+    try:
+        transfers = fetch_data("pending_transfers")
+
+    except Exception as exc:
+        st.error(
+            f"Unable to load pending transfers: {exc}"
+        )
+        return
+
+    transfers = [
+        row for row in transfers
+        if row.get("destination_site_id") == hospital_id
+        and not row.get("received")
+    ]
+
+    if not transfers:
+        st.success(
+            "No kits are waiting for receiving confirmation."
+        )
+        return
+
+    df = pd.DataFrame(transfers)
+
+    preferred = [
+        "transfer_id",
+        "transfer_date",
+        "source_site",
+        "kit_id",
+        "kit_type",
+        "transfer_status",
+    ]
+
+    cols = [
+        c for c in preferred
+        if c in df.columns
+    ]
+
+    st.dataframe(
+        df[cols],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.divider()
+
+    item_lookup = {
+        (
+            f'{row["kit_id"]} — '
+            f'{row.get("kit_type", "")} — '
+            f'from {row.get("source_site", "")}'
+        ):
+        row["transfer_item_id"]
+
+        for row in transfers
+    }
+
+    with st.form("confirm_receiving_form"):
+        selected = st.selectbox(
+            "Kit to Confirm",
+            list(item_lookup.keys()),
+        )
+
+        submitted = st.form_submit_button(
+            "Confirm Received",
+            use_container_width=True,
+        )
+
+    if submitted:
+        try:
+            supabase = get_authenticated_client()
+
+            supabase.rpc(
+                "confirm_transfer_item",
+                {
+                    "p_transfer_item_id":
+                        item_lookup[selected]
+                },
+            ).execute()
+
+            st.success(
+                "Kit receiving confirmed."
+            )
+
+            st.rerun()
+
+        except Exception as exc:
+            st.error(
+                f"Unable to confirm receiving: {exc}"
+            )
+
+
+# =========================================================
+# HOSPITAL INVENTORY
+# =========================================================
+
+def render_inventory():
+    page_header(
+        "Hospital Inventory",
+        "Kits currently held at your hospital",
+    )
+
+    hospital_id = get_site_id()
+
+    try:
+        data = fetch_data("hospital_inventory")
+
+    except Exception as exc:
+        st.error(
+            f"Unable to load hospital inventory: {exc}"
+        )
+        return
+
+    data = [
+        row for row in data
+        if row.get("site_id") == hospital_id
+    ]
+
+    if not data:
+        st.info("No hospital inventory found.")
+        return
+
+    df = pd.DataFrame(data)
+
+    c1, c2, c3 = st.columns(3)
+
+    types = ["All"]
+
+    if "kit_type" in df.columns:
+        types += sorted(
+            df["kit_type"]
+            .dropna()
+            .unique()
+            .tolist()
+        )
+
+    selected_type = c1.selectbox(
+        "Kit Type",
+        types,
+    )
+
+    statuses = ["All"]
+
+    if "status" in df.columns:
+        statuses += sorted(
+            df["status"]
+            .dropna()
+            .unique()
+            .tolist()
+        )
+
+    selected_status = c2.selectbox(
+        "Status",
+        statuses,
+    )
+
+    search = c3.text_input(
+        "Search Kit ID",
+        placeholder="KIT-000482",
+    )
+
+    filtered = df.copy()
+
+    if selected_type != "All":
+        filtered = filtered[
+            filtered["kit_type"] == selected_type
+        ]
+
+    if selected_status != "All":
+        filtered = filtered[
+            filtered["status"] == selected_status
+        ]
+
+    if search:
+        filtered = filtered[
+            filtered["kit_id"]
+            .astype(str)
+            .str.contains(
+                search,
+                case=False,
+                na=False,
+            )
+        ]
+
+    preferred = [
+        "kit_id",
+        "kit_type",
+        "status",
+        "lot_number",
+        "expiry_date",
+        "total_runs",
+        "runs_used",
+        "runs_remaining",
+        "initial_volume_ml",
+        "remaining_volume_ml",
+    ]
+
+    cols = [
+        c for c in preferred
+        if c in filtered.columns
+    ]
+
+    st.dataframe(
+        filtered[cols],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# =========================================================
+# DAILY SUMMARY + KIT USAGE
+# =========================================================
+
+def render_daily_summary():
+    page_header(
+        "Daily Summary",
+        "Record daily patients and kit usage",
+    )
+
+    hospital_id = get_site_id()
+
+    selected_date = st.date_input(
+        "Operational Date",
+        value=date.today(),
+        key="daily_summary_date",
+    )
+
+    st.subheader("Patient Totals")
+
+    with st.form("daily_patient_summary_form"):
+        c1, c2 = st.columns(2)
+
+        abt_patients = c1.number_input(
+            "Patients Served by ABT",
+            min_value=0,
+            value=0,
+            step=1,
+        )
+
+        trasis_patients = c2.number_input(
+            "Patients Served by TRASIS",
+            min_value=0,
+            value=0,
+            step=1,
+        )
+
+        notes = st.text_area(
+            "Daily Notes",
+            placeholder="Optional",
+        )
+
+        save_summary = st.form_submit_button(
+            "Save Daily Summary",
+            use_container_width=True,
+        )
+
+    if save_summary:
+        try:
+            supabase = get_authenticated_client()
+
+            response = supabase.rpc(
+                "save_daily_hospital_summary",
+                {
+                    "p_event_date":
+                        selected_date.isoformat(),
+
+                    "p_abt_patients":
+                        int(abt_patients),
+
+                    "p_trasis_patients":
+                        int(trasis_patients),
+
+                    "p_notes":
+                        notes.strip() or None,
+                },
+            ).execute()
+
+            st.session_state[
+                "current_daily_summary_id"
+            ] = response.data
+
+            st.success(
+                "Daily summary saved."
+            )
+
+        except Exception as exc:
+            st.error(
+                f"Unable to save summary: {exc}"
+            )
+
+    st.divider()
+    st.subheader("Kit Usage")
+
+    try:
+        inventory = fetch_data("hospital_inventory")
+
+        inventory = [
+            row for row in inventory
+            if row.get("site_id") == hospital_id
+            and row.get("status") == "HOSPITAL_AVAILABLE"
+        ]
+
+        summaries = fetch_data(
+            "daily_hospital_summaries",
+            "id,hospital_site_id,event_date",
+        )
+
+    except Exception as exc:
+        st.error(
+            f"Unable to load kit usage data: {exc}"
+        )
+        return
+
+    summary_id = None
+
+    for row in summaries:
+        if (
+            row.get("hospital_site_id") == hospital_id
+            and str(row.get("event_date"))
+                == selected_date.isoformat()
+        ):
+            summary_id = row.get("id")
+            break
+
+    if summary_id is None:
+        st.info(
+            "Save the Daily Summary first, then kit usage can be recorded."
+        )
+        return
+
+    if not inventory:
+        st.info(
+            "No usable hospital kits are available."
+        )
+        return
+
+    kit_lookup = {
+        (
+            f'{row["kit_id"]} — '
+            f'{row["kit_type"]} — '
+            f'{row.get("runs_remaining", 0)} run(s) remaining'
+        ):
+        row
+
+        for row in inventory
+    }
+
+    with st.form("kit_usage_form"):
+        selected_kit_label = st.selectbox(
+            "Kit",
+            list(kit_lookup.keys()),
+        )
+
+        selected_kit = kit_lookup[
+            selected_kit_label
+        ]
+
+        remaining = int(
+            selected_kit.get(
+                "runs_remaining",
+                0,
+            ) or 0
+        )
+
+        runs_used = st.number_input(
+            "Runs Used Today",
+            min_value=1,
+            max_value=max(remaining, 1),
+            value=1,
+            step=1,
+        )
+
+        usage_notes = st.text_area(
+            "Usage Notes",
+            placeholder="Optional",
+        )
+
+        submit_usage = st.form_submit_button(
+            "Record Kit Usage",
+            use_container_width=True,
+        )
+
+    if submit_usage:
+        try:
+            supabase = get_authenticated_client()
+
+            supabase.rpc(
+                "record_kit_usage",
+                {
+                    "p_daily_summary_id":
+                        summary_id,
+
+                    "p_kit_id":
+                        selected_kit["kit_pk"],
+
+                    "p_runs_used":
+                        int(runs_used),
+
+                    "p_notes":
+                        usage_notes.strip() or None,
+                },
+            ).execute()
+
+            st.success(
+                "Kit usage recorded."
+            )
+
+            st.rerun()
+
+        except Exception as exc:
+            st.error(
+                f"Unable to record kit usage: {exc}"
+            )
+
+
+# =========================================================
+# PRODUCTION RUNS
+# =========================================================
+
+def render_production():
+    page_header(
+        "Production Runs",
+        "Record ABT and TRASIS production activity",
+    )
+
+    hospital_id = get_site_id()
+
+    run_date = st.date_input(
+        "Run Date",
+        value=date.today(),
+        key="production_run_date",
+    )
+
+    try:
+        summaries = fetch_data(
+            "daily_hospital_summaries",
+            "id,hospital_site_id,event_date",
+        )
+
+        inventory = fetch_data(
+            "hospital_inventory"
+        )
+
+    except Exception as exc:
+        st.error(
+            f"Unable to load production data: {exc}"
+        )
+        return
+
+    summary_id = None
+
+    for row in summaries:
+        if (
+            row.get("hospital_site_id") == hospital_id
+            and str(row.get("event_date"))
+                == run_date.isoformat()
+        ):
+            summary_id = row.get("id")
+            break
+
+    inventory = [
+        row for row in inventory
+        if row.get("site_id") == hospital_id
+    ]
+
+    kit_options = ["No Kit"]
+
+    kit_lookup = {}
+
+    for row in inventory:
+        label = (
+            f'{row["kit_id"]} — '
+            f'{row["kit_type"]}'
+        )
+
+        kit_options.append(label)
+        kit_lookup[label] = row["kit_pk"]
+
+    with st.form("production_run_form"):
+        machine = st.selectbox(
+            "Machine",
+            ["ABT", "TRASIS"],
+        )
+
+        selected_kit = st.selectbox(
+            "Kit ID",
+            kit_options,
+        )
+
+        run_number = st.number_input(
+            "Run Number",
+            min_value=1,
+            value=1,
+            step=1,
+        )
+
+        activity_mci = st.number_input(
+            "Activity Produced / Received (mCi)",
+            min_value=0.0,
+            value=0.0,
+            step=0.1,
+        )
+
+        outcome = st.selectbox(
+            "Outcome",
+            [
+                "SUCCESSFUL",
+                "OPERATOR_MISHANDLING",
+                "CARD_FAULTY",
+                "EQUIPMENT_FAULT",
+                "OTHER",
+            ],
+        )
+
+        activity_lost = st.number_input(
+            "Activity Lost (mCi)",
+            min_value=0.0,
+            value=0.0,
+            step=0.1,
+        )
+
+        notes = st.text_area(
+            "Notes",
+            placeholder="Optional",
+        )
+
+        submitted = st.form_submit_button(
+            "Record Production Run",
+            use_container_width=True,
+        )
+
+    if submitted:
+        try:
+            supabase = get_authenticated_client()
+
+            supabase.rpc(
+                "record_production_run",
+                {
+                    "p_daily_summary_id":
+                        summary_id,
+
+                    "p_machine":
+                        machine,
+
+                    "p_kit_id":
+                        (
+                            None
+                            if selected_kit == "No Kit"
+                            else kit_lookup[selected_kit]
+                        ),
+
+                    "p_run_number":
+                        int(run_number),
+
+                    "p_activity_mci":
+                        float(activity_mci),
+
+                    "p_outcome":
+                        outcome,
+
+                    "p_activity_lost_mci":
+                        float(activity_lost),
+
+                    "p_notes":
+                        notes.strip() or None,
+                },
+            ).execute()
+
+            st.success(
+                "Production run recorded."
+            )
+
+            st.rerun()
+
+        except Exception as exc:
+            st.error(
+                f"Unable to record production run: {exc}"
+            )
+
+
+# =========================================================
+# REPORT KIT COMPONENT ISSUE
+# =========================================================
+
+def render_report_issue():
+    page_header(
+        "Report Kit Component Issue",
+        "Report a defective component and the number of affected runs",
+    )
+
+    hospital_id = get_site_id()
+
+    try:
+        inventory = fetch_data(
+            "hospital_inventory"
+        )
+
+    except Exception as exc:
+        st.error(
+            f"Unable to load hospital inventory: {exc}"
+        )
+        return
+
+    available_kits = [
+        row for row in inventory
+        if row.get("site_id") == hospital_id
+        and row.get("status") == "HOSPITAL_AVAILABLE"
+    ]
+
+    if not available_kits:
+        st.info(
+            "No available kits can currently have an issue reported."
+        )
+        return
+
+    kit_lookup = {
+        (
+            f'{row["kit_id"]} — '
+            f'{row["kit_type"]}'
+        ):
+        row
+
+        for row in available_kits
+    }
+
+    selected_label = st.selectbox(
+        "Kit ID",
+        list(kit_lookup.keys()),
+    )
+
+    selected_kit = kit_lookup[
+        selected_label
+    ]
+
+    kit_pk = selected_kit["kit_pk"]
+
+    st.info(
+        f'Kit Type: {selected_kit["kit_type"]}  |  '
+        f'Total Runs: {selected_kit.get("total_runs", 0)}  |  '
+        f'Used: {selected_kit.get("runs_used", 0)}  |  '
+        f'Remaining: {selected_kit.get("runs_remaining", 0)}'
+    )
+
+    try:
+        supabase = get_authenticated_client()
+
+        physical_components = (
+            supabase
+            .table("kit_components")
+            .select(
+                "id,template_component_id,status,"
+                "template_components("
+                "component_name,catalogue_number)"
+            )
+            .eq("kit_id", kit_pk)
+            .execute()
+        ).data or []
+
+    except Exception as exc:
+        st.error(
+            f"Unable to load kit components: {exc}"
+        )
+        return
+
+    if not physical_components:
+        st.warning(
+            "This inventory item does not have component records."
+        )
+        return
+
+    component_lookup = {}
+
+    for row in physical_components:
+        component = (
+            row.get("template_components")
+            or {}
+        )
+
+        name = component.get(
+            "component_name",
+            "Unknown Component",
+        )
+
+        catalogue = component.get(
+            "catalogue_number"
+        )
+
+        label = name
+
+        if catalogue:
+            label += f" ({catalogue})"
+
+        component_lookup[label] = row["id"]
+
+    remaining_runs = int(
+        selected_kit.get(
+            "runs_remaining",
+            0,
+        ) or 0
+    )
+
+    if remaining_runs <= 0:
+        st.warning(
+            "This kit has no remaining runs."
+        )
+        return
+
+    with st.form("report_kit_issue_form"):
+        selected_components = st.multiselect(
+            "Defective Component(s)",
+            list(component_lookup.keys()),
+        )
+
+        runs_affected = st.number_input(
+            "Number of Affected Runs",
+            min_value=1,
+            max_value=remaining_runs,
+            value=1,
+            step=1,
+        )
+
+        issue_date = st.date_input(
+            "Issue Date",
+            value=date.today(),
+        )
+
+        description = st.text_area(
+            "Description",
+            placeholder=(
+                "Describe the component defect "
+                "or problem, if needed."
+            ),
+        )
+
+        submitted = st.form_submit_button(
+            "Report Component Issue",
+            use_container_width=True,
+        )
+
+    if submitted:
+        if not selected_components:
+            st.error(
+                "Select at least one defective component."
+            )
+            return
+
+        component_ids = [
+            component_lookup[label]
+            for label in selected_components
+        ]
+
+        try:
+            supabase = get_authenticated_client()
+
+            supabase.rpc(
+                "report_kit_issue",
+                {
+                    "p_kit_id":
+                        kit_pk,
+
+                    "p_event_date":
+                        issue_date.isoformat(),
+
+                    "p_runs_affected":
+                        int(runs_affected),
+
+                    "p_component_ids":
+                        component_ids,
+
+                    "p_description":
+                        description.strip() or None,
+                },
+            ).execute()
+
+            st.success(
+                "Kit component issue reported successfully."
+            )
+
+            st.rerun()
+
+        except Exception as exc:
+            st.error(
+                f"Unable to report kit issue: {exc}"
+            )
+
+
+# =========================================================
+# ISSUE STATUS
+# =========================================================
+
+def render_issues():
+    page_header(
+        "Kit Issues",
+        "View component issues reported by your hospital",
+    )
+
+    hospital_id = get_site_id()
+
+    try:
+        data = fetch_data("open_kit_issues")
+
+    except Exception as exc:
+        st.error(
+            f"Unable to load kit issues: {exc}"
+        )
+        return
+
+    data = [
+        row for row in data
+        if row.get("hospital_site_id") == hospital_id
+    ]
+
+    if not data:
+        st.success(
+            "No open kit component issues."
+        )
+        return
+
+    df = pd.DataFrame(data)
+
+    preferred = [
+        "issue_id",
+        "event_date",
+        "kit_id",
+        "kit_type",
+        "component_name",
+        "catalogue_number",
+        "runs_affected",
+        "description",
+    ]
+
+    cols = [
+        c for c in preferred
+        if c in df.columns
+    ]
+
+    st.dataframe(
+        df[cols],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# =========================================================
+# DOWNTIME
+# =========================================================
+
+def render_downtime():
+    page_header(
+        "Equipment Downtime",
+        "Record downtime for hospital equipment",
+    )
+
+    hospital_id = get_site_id()
+
+    try:
+        equipment = fetch_data(
+            "equipment",
+            "id,site_id,equipment_name,equipment_type,is_active",
+        )
+
+    except Exception as exc:
+        st.error(
+            f"Unable to load equipment: {exc}"
+        )
+        return
+
+    equipment = [
+        row for row in equipment
+        if row.get("site_id") == hospital_id
+        and row.get("is_active")
+    ]
+
+    if not equipment:
+        st.warning(
+            "No active equipment is configured for this hospital."
+        )
+        return
+
+    equipment_lookup = {
+        row["equipment_name"]: row["id"]
+        for row in equipment
+    }
+
+    with st.form("downtime_form"):
+        equipment_name = st.selectbox(
+            "Equipment",
+            list(equipment_lookup.keys()),
+        )
+
+        event_date = st.date_input(
+            "Date",
+            value=date.today(),
+        )
+
+        duration = st.number_input(
+            "Downtime Duration (minutes)",
+            min_value=1,
+            value=30,
+            step=1,
+        )
+
+        reason = st.text_input(
+            "Reason",
+            placeholder="Equipment fault, maintenance, etc.",
+        )
+
+        notes = st.text_area(
+            "Notes",
+            placeholder="Optional",
+        )
+
+        submitted = st.form_submit_button(
+            "Record Downtime",
+            use_container_width=True,
+        )
+
+    if submitted:
+        if not reason.strip():
+            st.error("Reason is required.")
+            return
+
+        try:
+            supabase = get_authenticated_client()
+
+            supabase.rpc(
+                "record_equipment_downtime",
+                {
+                    "p_equipment_id":
+                        equipment_lookup[equipment_name],
+
+                    "p_event_date":
+                        event_date.isoformat(),
+
+                    "p_duration_minutes":
+                        int(duration),
+
+                    "p_reason":
+                        reason.strip(),
+
+                    "p_notes":
+                        notes.strip() or None,
+                },
+            ).execute()
+
+            st.success(
+                "Equipment downtime recorded."
+            )
+
+            st.rerun()
+
+        except Exception as exc:
+            st.error(
+                f"Unable to record downtime: {exc}"
+            )
+
+
+# =========================================================
+# EXPIRY
+# =========================================================
+
+def render_expiry():
+    page_header(
+        "Expiry Alerts",
+        "Kits and components approaching expiry",
+    )
+
+    hospital_id = get_site_id()
+
+    tab1, tab2 = st.tabs(
+        [
+            "Kits",
+            "Components",
+        ]
+    )
+
+    with tab1:
+        try:
+            alerts = fetch_data(
+                "kit_expiry_alerts"
+            )
+
+            alerts = [
+                row for row in alerts
+                if row.get("site_id") == hospital_id
+            ]
+
+        except Exception as exc:
+            st.error(
+                f"Unable to load kit expiry alerts: {exc}"
+            )
+            alerts = []
+
+        if alerts:
+            df = pd.DataFrame(alerts)
+
+            if "days_to_expiry" in df.columns:
+                df = df.sort_values(
+                    "days_to_expiry"
+                )
+
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        else:
+            st.success(
+                "No hospital kit expiry alerts."
+            )
+
+    with tab2:
+        try:
+            alerts = fetch_data(
+                "component_expiry_alerts"
+            )
+
+            alerts = [
+                row for row in alerts
+                if row.get("site_id") == hospital_id
+            ]
+
+        except Exception as exc:
+            st.error(
+                f"Unable to load component expiry alerts: {exc}"
+            )
+            alerts = []
+
+        if alerts:
+            df = pd.DataFrame(alerts)
+
+            if "days_to_expiry" in df.columns:
+                df = df.sort_values(
+                    "days_to_expiry"
+                )
+
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        else:
+            st.success(
+                "No hospital component expiry alerts."
+            )
+
+
+# =========================================================
+# MAIN ROUTER
+# =========================================================
 
 def render():
     require_role("hospital_manager")
 
-    page_header(
-        "Hospital Dashboard",
-        "Inventory, production, kit usage and equipment monitoring",
-    )
+    with st.sidebar:
+        st.markdown("### Hospital")
 
-    col1, col2, col3, col4 = st.columns(4)
+        section = st.radio(
+            "Navigation",
+            [
+                "Overview",
+                "Confirm Receiving",
+                "Hospital Inventory",
+                "Daily Summary",
+                "Production Runs",
+                "Report Kit Component Issue",
+                "Kit Issues",
+                "Downtime",
+                "Expiry Alerts",
+            ],
+            label_visibility="collapsed",
+            key="hospital_navigation",
+        )
 
-    col1.metric("Available Kits", "—")
-    col2.metric("Pending Receipt", "—")
-    col3.metric("Open Kit Issues", "—")
-    col4.metric("Expiry Alerts", "—")
+    if section == "Overview":
+        render_overview()
 
-    st.info(
-        "Hospital operational tools will be added next."
-    )
+    elif section == "Confirm Receiving":
+        render_receiving()
+
+    elif section == "Hospital Inventory":
+        render_inventory()
+
+    elif section == "Daily Summary":
+        render_daily_summary()
+
+    elif section == "Production Runs":
+        render_production()
+
+    elif section == "Report Kit Component Issue":
+        render_report_issue()
+
+    elif section == "Kit Issues":
+        render_issues()
+
+    elif section == "Downtime":
+        render_downtime()
+
+    elif section == "Expiry Alerts":
+        render_expiry()
