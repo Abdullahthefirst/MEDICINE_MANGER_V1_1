@@ -57,66 +57,187 @@ def show_production_report():
 
     df = pd.DataFrame(data)
 
-    total_runs = (
-        df["total_runs"].sum()
-        if "total_runs" in df.columns
-        else 0
-    )
-
-    successful_runs = (
-        df["successful_runs"].sum()
-        if "successful_runs" in df.columns
-        else 0
-    )
-
-    failed_runs = (
-        df["failed_runs"].sum()
-        if "failed_runs" in df.columns
-        else 0
-    )
-
-    total_activity = (
-        df["total_activity_mci"].sum()
-        if "total_activity_mci" in df.columns
-        else 0
-    )
-
-    c1, c2, c3, c4 = st.columns(4)
-
-    c1.metric("Total Runs", int(total_runs))
-    c2.metric("Successful Runs", int(successful_runs))
-    c3.metric("Failed Runs", int(failed_runs))
-    c4.metric(
-        "Total Activity",
-        f"{float(total_activity):.2f} mCi",
-    )
-
     if "event_date" in df.columns:
         df["event_date"] = pd.to_datetime(
             df["event_date"]
         )
 
-    if (
-        "event_date" in df.columns
-        and "total_runs" in df.columns
-    ):
-        trend = (
-            df.groupby("event_date")["total_runs"]
-            .sum()
-            .reset_index()
+    if "machine" not in df.columns:
+        st.error(
+            "Production data does not contain the machine field."
         )
+        return
 
-        st.line_chart(
-            trend,
-            x="event_date",
-            y="total_runs",
-        )
+    abt_df = df[
+        df["machine"].astype(str).str.upper() == "ABT"
+    ].copy()
 
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True,
+    trasis_df = df[
+        df["machine"].astype(str).str.upper() == "TRASIS"
+    ].copy()
+
+    tab1, tab2 = st.tabs(
+        [
+            "ABT",
+            "TRASIS",
+        ]
     )
+
+    with tab1:
+        st.subheader("ABT Performance")
+
+        if abt_df.empty:
+            st.info(
+                "No ABT production data available."
+            )
+
+        else:
+            total_runs = (
+                abt_df["total_runs"].sum()
+                if "total_runs" in abt_df.columns
+                else 0
+            )
+
+            successful_runs = (
+                abt_df["successful_runs"].sum()
+                if "successful_runs" in abt_df.columns
+                else 0
+            )
+
+            failed_runs = (
+                abt_df["failed_runs"].sum()
+                if "failed_runs" in abt_df.columns
+                else 0
+            )
+
+            total_activity = (
+                abt_df["total_activity_mci"].sum()
+                if "total_activity_mci" in abt_df.columns
+                else 0
+            )
+
+            c1, c2, c3, c4 = st.columns(4)
+
+            c1.metric(
+                "ABT Total Runs",
+                int(total_runs),
+            )
+
+            c2.metric(
+                "ABT Successful Runs",
+                int(successful_runs),
+            )
+
+            c3.metric(
+                "ABT Failed Runs",
+                int(failed_runs),
+            )
+
+            c4.metric(
+                "ABT Total Activity",
+                f"{float(total_activity):.2f} mCi",
+            )
+
+            if (
+                "event_date" in abt_df.columns
+                and "total_runs" in abt_df.columns
+            ):
+                abt_trend = (
+                    abt_df.groupby(
+                        "event_date",
+                        as_index=False,
+                    )["total_runs"].sum()
+                )
+
+                st.line_chart(
+                    abt_trend,
+                    x="event_date",
+                    y="total_runs",
+                )
+
+            st.dataframe(
+                abt_df,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    with tab2:
+        st.subheader("TRASIS Performance")
+
+        if trasis_df.empty:
+            st.info(
+                "No TRASIS production data available."
+            )
+
+        else:
+            total_runs = (
+                trasis_df["total_runs"].sum()
+                if "total_runs" in trasis_df.columns
+                else 0
+            )
+
+            successful_runs = (
+                trasis_df["successful_runs"].sum()
+                if "successful_runs" in trasis_df.columns
+                else 0
+            )
+
+            failed_runs = (
+                trasis_df["failed_runs"].sum()
+                if "failed_runs" in trasis_df.columns
+                else 0
+            )
+
+            total_activity = (
+                trasis_df["total_activity_mci"].sum()
+                if "total_activity_mci" in trasis_df.columns
+                else 0
+            )
+
+            c1, c2, c3, c4 = st.columns(4)
+
+            c1.metric(
+                "TRASIS Total Runs",
+                int(total_runs),
+            )
+
+            c2.metric(
+                "TRASIS Successful Runs",
+                int(successful_runs),
+            )
+
+            c3.metric(
+                "TRASIS Failed Runs",
+                int(failed_runs),
+            )
+
+            c4.metric(
+                "TRASIS Total Activity",
+                f"{float(total_activity):.2f} mCi",
+            )
+
+            if (
+                "event_date" in trasis_df.columns
+                and "total_runs" in trasis_df.columns
+            ):
+                trasis_trend = (
+                    trasis_df.groupby(
+                        "event_date",
+                        as_index=False,
+                    )["total_runs"].sum()
+                )
+
+                st.line_chart(
+                    trasis_trend,
+                    x="event_date",
+                    y="total_runs",
+                )
+
+            st.dataframe(
+                trasis_df,
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 def show_patient_report():
@@ -360,7 +481,7 @@ def show_downtime_report():
 
 
 def show_kit_usage_report():
-    st.subheader("Kit Consumption")
+    st.subheader("Kit Usage History")
 
     try:
         usage = fetch_data(

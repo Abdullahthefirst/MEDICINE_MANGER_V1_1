@@ -1330,7 +1330,7 @@ def render_reports():
             "Patients & Activity",
             "Production Failures",
             "Equipment Downtime",
-            "Kit Consumption",
+            "Kit Usage History",
         ],
     )
 
@@ -1348,7 +1348,7 @@ def render_reports():
     elif report == "Equipment Downtime":
         show_downtime_report()
 
-    elif report == "Kit Consumption":
+    elif report == "Kit Usage History":
         show_kit_usage_report()
 
 
