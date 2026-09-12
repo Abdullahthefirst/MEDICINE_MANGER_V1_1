@@ -172,18 +172,15 @@ def render_overview():
 def render_receiving():
     page_header(
         "Confirm Receiving",
-        "Confirm kits physically received from the warehouse",
+        "Select all kits physically received from the warehouse",
     )
 
     hospital_id = get_site_id()
 
     try:
         transfers = fetch_data("pending_transfers")
-
     except Exception as exc:
-        st.error(
-            f"Unable to load pending transfers: {exc}"
-        )
+        st.error(f"Unable to load pending transfers: {exc}")
         return
 
     transfers = [
@@ -193,79 +190,71 @@ def render_receiving():
     ]
 
     if not transfers:
-        st.success(
-            "No kits are waiting for receiving confirmation."
-        )
+        st.success("No kits are awaiting receiving confirmation.")
         return
 
     df = pd.DataFrame(transfers)
 
-    preferred = [
+    columns = [
         "transfer_id",
         "transfer_date",
         "source_site",
         "kit_id",
         "kit_type",
-        "transfer_status",
-    ]
-
-    cols = [
-        c for c in preferred
-        if c in df.columns
     ]
 
     st.dataframe(
-        df[cols],
+        df[[c for c in columns if c in df.columns]],
         use_container_width=True,
         hide_index=True,
     )
 
-    st.divider()
-
-    item_lookup = {
-        (
+    option_lookup = {}
+    for row in transfers:
+        label = (
             f'{row["kit_id"]} — '
             f'{row.get("kit_type", "")} — '
-            f'from {row.get("source_site", "")}'
-        ):
-        row["transfer_item_id"]
+            f'{row.get("source_site", "")}'
+        )
+        option_lookup[label] = row["transfer_item_id"]
 
-        for row in transfers
-    }
-
-    with st.form("confirm_receiving_form"):
-        selected = st.selectbox(
-            "Kit to Confirm",
-            list(item_lookup.keys()),
+    with st.form("multi_receive_form"):
+        selected = st.multiselect(
+            "Kits Physically Received",
+            list(option_lookup.keys()),
         )
 
         submitted = st.form_submit_button(
-            "Confirm Received",
+            "Confirm Selected Kits",
             use_container_width=True,
         )
 
     if submitted:
-        try:
-            supabase = get_authenticated_client()
+        if not selected:
+            st.error("Select at least one received kit.")
+            return
 
-            supabase.rpc(
-                "confirm_transfer_item",
-                {
-                    "p_transfer_item_id":
-                        item_lookup[selected]
-                },
-            ).execute()
+        supabase = get_authenticated_client()
+        successful = 0
+        failed = []
 
-            st.success(
-                "Kit receiving confirmed."
-            )
+        for label in selected:
+            try:
+                supabase.rpc(
+                    "confirm_transfer_item",
+                    {"p_transfer_item_id": option_lookup[label]},
+                ).execute()
+                successful += 1
+            except Exception as exc:
+                failed.append(f"{label}: {exc}")
 
-            st.rerun()
+        if successful:
+            st.success(f"{successful} kit(s) confirmed received.")
 
-        except Exception as exc:
-            st.error(
-                f"Unable to confirm receiving: {exc}"
-            )
+        if failed:
+            st.warning("Some kits could not be confirmed:\n\n" + "\n\n".join(failed))
+
+        st.rerun()
 
 
 # =========================================================
@@ -934,55 +923,116 @@ def render_report_issue():
 
 def render_issues():
     page_header(
-        "Kit Issues",
-        "View component issues reported by your hospital",
+        "Kit & Component Issues",
+        "Track reported kit problems and confirm replacement components",
     )
 
     hospital_id = get_site_id()
 
     try:
-        data = fetch_data("open_kit_issues")
-
+        data = fetch_data("kit_issue_component_status")
     except Exception as exc:
-        st.error(
-            f"Unable to load kit issues: {exc}"
-        )
+        st.error(f"Unable to load issue information: {exc}")
         return
 
-    data = [
-        row for row in data
-        if row.get("hospital_site_id") == hospital_id
-    ]
+    data = [row for row in data if row.get("hospital_site_id") == hospital_id]
 
-    if not data:
-        st.success(
-            "No open kit component issues."
+    tab1, tab2 = st.tabs(["Kit Issues", "Component Issues"])
+
+    with tab1:
+        if not data:
+            st.info("No kit issues have been reported.")
+        else:
+            df = pd.DataFrame(data)
+            issue_columns = [
+                "issue_id",
+                "kit_id",
+                "kit_type",
+                "event_date",
+                "runs_affected",
+                "issue_status",
+                "description",
+            ]
+            issue_df = (
+                df[[c for c in issue_columns if c in df.columns]]
+                .drop_duplicates(subset=["issue_id"])
+            )
+            st.dataframe(issue_df, use_container_width=True, hide_index=True)
+
+    with tab2:
+        if not data:
+            st.info("No component issues have been reported.")
+            return
+
+        df = pd.DataFrame(data)
+        component_columns = [
+            "issue_id",
+            "kit_id",
+            "component_name",
+            "catalogue_number",
+            "runs_affected",
+            "component_resolution_status",
+            "warehouse_resolution_date",
+            "warehouse_notes",
+            "hospital_confirmed_at",
+        ]
+
+        st.dataframe(
+            df[[c for c in component_columns if c in df.columns]],
+            use_container_width=True,
+            hide_index=True,
         )
-        return
 
-    df = pd.DataFrame(data)
+        pending = [
+            row for row in data
+            if row.get("component_resolution_status") == "AWAITING_HOSPITAL_CONFIRMATION"
+        ]
 
-    preferred = [
-        "issue_id",
-        "event_date",
-        "kit_id",
-        "kit_type",
-        "component_name",
-        "catalogue_number",
-        "runs_affected",
-        "description",
-    ]
+        if not pending:
+            st.info("No replacement components are currently waiting for your confirmation.")
+            return
 
-    cols = [
-        c for c in preferred
-        if c in df.columns
-    ]
+        st.divider()
+        st.subheader("Confirm Replacement Received")
+        st.warning("Confirm only after the replacement component has physically arrived and is acceptable.")
 
-    st.dataframe(
-        df[cols],
-        use_container_width=True,
-        hide_index=True,
-    )
+        option_lookup = {}
+        for row in pending:
+            label = (
+                f'{row["kit_id"]} — '
+                f'{row["component_name"]} — '
+                f'Issue #{row["issue_id"]}'
+            )
+            option_lookup[label] = row
+
+        selected_label = st.selectbox("Replacement", list(option_lookup.keys()))
+        selected = option_lookup[selected_label]
+
+        st.write(f'**Kit:** {selected["kit_id"]}')
+        st.write(f'**Component:** {selected["component_name"]}')
+        st.write(f'**Warehouse replacement date:** {selected.get("warehouse_resolution_date", "")}')
+
+        if selected.get("warehouse_notes"):
+            st.info(selected["warehouse_notes"])
+
+        confirm = st.button("Confirm Replacement Received", type="primary", use_container_width=True)
+
+        if confirm:
+            try:
+                supabase = get_authenticated_client()
+                supabase.rpc(
+                    "confirm_kit_issue_component",
+                    {
+                        "p_issue_id": selected["issue_id"],
+                        "p_kit_component_id": selected["kit_component_id"],
+                    },
+                ).execute()
+                st.success(
+                    "Replacement confirmed. If this was the final unresolved component, the kit is now available again."
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Unable to confirm replacement: {exc}")
 
 
 # =========================================================
@@ -1373,8 +1423,8 @@ def render():
                 "Report Kit Component Issue",
                 "Kit Issues",
                 "Downtime",
-                "Reports & Analytics",
                 "Expiry Alerts",
+                "Reports & Analytics",
             ],
             label_visibility="collapsed",
             key="hospital_navigation",

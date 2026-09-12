@@ -37,25 +37,45 @@ def get_filtered_hospital_data(table):
     return data
 
 
-def show_production_report():
+def show_production_report(
+    site_id=None,
+    start_date=None,
+    end_date=None,
+):
     st.subheader("Production Performance")
 
     try:
-        data = get_filtered_hospital_data(
-            "daily_production_summary"
-        )
-
+        data = fetch_data("daily_production_summary")
     except Exception as exc:
         st.error(
             f"Unable to load production report: {exc}"
         )
         return
 
+    if site_id is not None:
+        for column in ["hospital_site_id", "site_id"]:
+            if column in data[0].keys() if data else False:
+                data = [row for row in data if row.get(column) == site_id]
+                break
+
     if not data:
         st.info("No production data available.")
         return
 
     df = pd.DataFrame(data)
+
+    if site_id is not None:
+        for column in ["hospital_site_id", "site_id"]:
+            if column in df.columns:
+                df = df[df[column] == site_id]
+                break
+
+    if start_date is not None and end_date is not None and "event_date" in df.columns:
+        df["event_date"] = pd.to_datetime(df["event_date"])
+        df = df[
+            (df["event_date"].dt.date >= start_date)
+            & (df["event_date"].dt.date <= end_date)
+        ]
 
     if "event_date" in df.columns:
         df["event_date"] = pd.to_datetime(
@@ -240,7 +260,11 @@ def show_production_report():
             )
 
 
-def show_patient_report():
+def show_patient_report(
+    site_id=None,
+    start_date=None,
+    end_date=None,
+):
     st.subheader("Patients & Activity")
 
     try:
@@ -254,9 +278,13 @@ def show_patient_report():
         )
         return
 
-    if get_role() == "hospital_manager":
+    if site_id is not None:
+        data = [
+            row for row in data
+            if row.get("hospital_site_id") == site_id
+        ]
+    elif get_role() == "hospital_manager":
         site_id = get_site_id()
-
         data = [
             row for row in data
             if row.get("hospital_site_id") == site_id
@@ -269,6 +297,19 @@ def show_patient_report():
         return
 
     df = pd.DataFrame(data)
+
+    if site_id is not None:
+        for column in ["hospital_site_id", "site_id"]:
+            if column in df.columns:
+                df = df[df[column] == site_id]
+                break
+
+    if start_date is not None and end_date is not None and "event_date" in df.columns:
+        df["event_date"] = pd.to_datetime(df["event_date"])
+        df = df[
+            (df["event_date"].dt.date >= start_date)
+            & (df["event_date"].dt.date <= end_date)
+        ]
 
     total_patients = (
         df["total_patients"].sum()
@@ -353,7 +394,11 @@ def show_patient_report():
     )
 
 
-def show_failure_report():
+def show_failure_report(
+    site_id=None,
+    start_date=None,
+    end_date=None,
+):
     st.subheader("Production Failures")
 
     try:
@@ -367,9 +412,13 @@ def show_failure_report():
         )
         return
 
-    if get_role() == "hospital_manager":
+    if site_id is not None:
+        data = [
+            row for row in data
+            if row.get("hospital_site_id") == site_id
+        ]
+    elif get_role() == "hospital_manager":
         site_id = get_site_id()
-
         data = [
             row for row in data
             if row.get("hospital_site_id") == site_id
@@ -382,6 +431,19 @@ def show_failure_report():
         return
 
     df = pd.DataFrame(data)
+
+    if site_id is not None:
+        for column in ["hospital_site_id", "site_id"]:
+            if column in df.columns:
+                df = df[df[column] == site_id]
+                break
+
+    if start_date is not None and end_date is not None and "event_date" in df.columns:
+        df["event_date"] = pd.to_datetime(df["event_date"])
+        df = df[
+            (df["event_date"].dt.date >= start_date)
+            & (df["event_date"].dt.date <= end_date)
+        ]
 
     if "outcome" in df.columns:
         counts = (
@@ -408,7 +470,11 @@ def show_failure_report():
     )
 
 
-def show_downtime_report():
+def show_downtime_report(
+    site_id=None,
+    start_date=None,
+    end_date=None,
+):
     st.subheader("Equipment Downtime")
 
     try:
@@ -422,9 +488,13 @@ def show_downtime_report():
         )
         return
 
-    if get_role() == "hospital_manager":
+    if site_id is not None:
+        data = [
+            row for row in data
+            if row.get("hospital_site_id") == site_id
+        ]
+    elif get_role() == "hospital_manager":
         site_id = get_site_id()
-
         data = [
             row for row in data
             if row.get("hospital_site_id") == site_id
@@ -437,6 +507,19 @@ def show_downtime_report():
         return
 
     df = pd.DataFrame(data)
+
+    if site_id is not None:
+        for column in ["hospital_site_id", "site_id"]:
+            if column in df.columns:
+                df = df[df[column] == site_id]
+                break
+
+    if start_date is not None and end_date is not None and "event_date" in df.columns:
+        df["event_date"] = pd.to_datetime(df["event_date"])
+        df = df[
+            (df["event_date"].dt.date >= start_date)
+            & (df["event_date"].dt.date <= end_date)
+        ]
 
     total_minutes = (
         df["duration_minutes"].sum()
@@ -480,7 +563,11 @@ def show_downtime_report():
     )
 
 
-def show_kit_usage_report():
+def show_kit_usage_report(
+    site_id=None,
+    start_date=None,
+    end_date=None,
+):
     st.subheader("Kit Usage History")
 
     try:
@@ -552,7 +639,10 @@ def show_kit_usage_report():
         if not summary:
             continue
 
-        if get_role() == "hospital_manager":
+        if site_id is not None:
+            if summary.get("hospital_site_id") != site_id:
+                continue
+        elif get_role() == "hospital_manager":
             if summary.get("hospital_site_id") != get_site_id():
                 continue
 
@@ -576,6 +666,13 @@ def show_kit_usage_report():
                 "Runs Used": record.get("runs_used", 0),
             }
         )
+
+    if start_date is not None and end_date is not None:
+        rows = [
+            row for row in rows
+            if row.get("Date") is not None
+            and start_date <= pd.to_datetime(row["Date"]).date() <= end_date
+        ]
 
     if not rows:
         st.info(

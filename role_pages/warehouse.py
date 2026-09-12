@@ -539,196 +539,88 @@ def render_transfers():
 
 def render_issues():
     page_header(
-        "Kit Component Issues",
-        "Review and resolve component defects reported by hospitals",
+        "Component Issues",
+        "Supply replacements for defective kit components",
     )
 
     try:
-        issues = fetch_data(
-            "open_kit_issues"
-        )
-
+        data = fetch_data("kit_issue_component_status")
     except Exception as exc:
-        st.error(
-            f"Unable to load kit issues: {exc}"
-        )
+        st.error(f"Unable to load component issues: {exc}")
         return
 
-    if not issues:
-        st.success(
-            "There are no open kit component issues."
-        )
+    data = [row for row in data if row.get("issue_status") == "OPEN"]
+
+    if not data:
+        st.success("No open component issues.")
         return
 
-    grouped = {}
-
-    for row in issues:
-        issue_id = row["issue_id"]
-
-        if issue_id not in grouped:
-            grouped[issue_id] = {
-                "issue_id": issue_id,
-                "kit_id": row.get("kit_id"),
-                "kit_type": row.get("kit_type"),
-                "hospital": row.get("hospital"),
-                "event_date": row.get("event_date"),
-                "runs_affected": row.get("runs_affected"),
-                "description": row.get("description"),
-                "components": [],
-            }
-
-        grouped[issue_id]["components"].append(
-            {
-                "kit_component_id": row.get("kit_component_id"),
-                "component_name": row.get("component_name"),
-                "catalogue_number": row.get("catalogue_number"),
-                "component_status": row.get("component_status"),
-            }
-        )
-
-    issue_lookup = {}
-
-    for issue_id, issue in grouped.items():
-        label = (
-            f'Issue #{issue_id} — '
-            f'{issue["kit_id"]} — '
-            f'{issue["hospital"]}'
-        )
-
-        issue_lookup[label] = issue
-
-    selected_label = st.selectbox(
-        "Select Issue",
-        list(issue_lookup.keys()),
-    )
-
-    issue = issue_lookup[selected_label]
-
-    st.divider()
-
-    c1, c2, c3, c4 = st.columns(4)
-
-    c1.metric("Kit ID", issue["kit_id"])
-    c2.metric("Kit Type", issue["kit_type"])
-    c3.metric("Hospital", issue["hospital"])
-    c4.metric("Affected Runs", issue["runs_affected"])
-
-    st.write(f"**Reported Date:** {issue['event_date']}")
-
-    if issue.get("description"):
-        st.write(f"**Description:** {issue['description']}")
-
-    st.subheader("Defective Components")
-
-    component_df = pd.DataFrame(issue["components"])
+    df = pd.DataFrame(data)
 
     display_columns = [
+        "issue_id",
+        "hospital",
+        "kit_id",
+        "kit_type",
         "component_name",
         "catalogue_number",
-        "component_status",
+        "runs_affected",
+        "component_resolution_status",
     ]
 
     st.dataframe(
-        component_df[
-            [
-                c for c in display_columns
-                if c in component_df.columns
-            ]
-        ],
+        df[[col for col in display_columns if col in df.columns]],
         use_container_width=True,
         hide_index=True,
     )
 
     unresolved = [
-        component
-        for component in issue["components"]
-        if component.get("component_status") in (
-            "DEFECTIVE",
-            "REPLACEMENT_PENDING",
-        )
+        row for row in data
+        if row.get("component_resolution_status") == "AWAITING_WAREHOUSE_REPLACEMENT"
     ]
 
     if not unresolved:
-        st.info(
-            "All components for this issue have already been resolved."
-        )
+        st.info("All replacements have been supplied. They are waiting for hospital confirmation.")
         return
 
     st.divider()
-    st.subheader("Confirm Replacement")
-    st.caption(
-        "Resolve each defective component individually. The kit will become available again only after every defective component in this issue has been resolved."
-    )
+    st.subheader("Supply Replacement")
 
-    component_lookup = {}
-
-    for component in unresolved:
-        label = component.get("component_name", "Unknown Component")
-        catalogue = component.get("catalogue_number")
-
-        if catalogue:
-            label += f" ({catalogue})"
-
-        component_lookup[label] = component["kit_component_id"]
-
-    with st.form("resolve_issue_component_form"):
-        selected_component = st.selectbox(
-            "Component Being Replaced",
-            list(component_lookup.keys()),
+    option_lookup = {}
+    for row in unresolved:
+        label = (
+            f'Issue #{row["issue_id"]} — '
+            f'{row["kit_id"]} — '
+            f'{row["component_name"]} — '
+            f'{row["hospital"]}'
         )
+        option_lookup[label] = row
 
-        quantity = st.number_input(
-            "Replacement Quantity",
-            min_value=1,
-            value=1,
-            step=1,
-        )
-
-        resolution_date = st.date_input(
-            "Replacement / Resolution Date",
-            value=date.today(),
-        )
-
-        notes = st.text_area(
-            "Resolution Notes",
-            placeholder="Example: Replacement supplied and confirmed.",
-        )
-
-        submitted = st.form_submit_button(
-            "Confirm Replacement",
-            use_container_width=True,
-        )
+    with st.form("warehouse_component_resolution"):
+        selected_label = st.selectbox("Component", list(option_lookup.keys()))
+        quantity = st.number_input("Replacement Quantity", min_value=1, value=1, step=1)
+        resolution_date = st.date_input("Replacement Date", value=date.today())
+        notes = st.text_area("Warehouse Notes", placeholder="Replacement supplied / dispatched.")
+        submitted = st.form_submit_button("Confirm Replacement Supplied", use_container_width=True)
 
     if submitted:
+        selected = option_lookup[selected_label]
         try:
             supabase = get_authenticated_client()
-
             supabase.rpc(
                 "resolve_kit_issue_component",
                 {
-                    "p_issue_id": issue["issue_id"],
-                    "p_kit_component_id": component_lookup[selected_component],
+                    "p_issue_id": selected["issue_id"],
+                    "p_kit_component_id": selected["kit_component_id"],
+                    "p_notes": notes.strip() or None,
                     "p_quantity": int(quantity),
                     "p_resolution_date": resolution_date.isoformat(),
-                    "p_notes": notes.strip() or None,
                 },
             ).execute()
-
-            if len(unresolved) > 1:
-                st.success(
-                    "Replacement recorded. This issue still has other defective components awaiting replacement."
-                )
-            else:
-                st.success(
-                    "Final defective component resolved. The issue is now closed and the kit is available for use again."
-                )
-
+            st.success("Replacement recorded. The hospital must now confirm receipt before the kit can be released.")
             st.rerun()
-
         except Exception as exc:
-            st.error(
-                f"Unable to resolve component: {exc}"
-            )
+            st.error(f"Unable to record replacement: {exc}")
 
 
 # =========================================================
