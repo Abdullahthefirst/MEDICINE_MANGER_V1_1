@@ -1,3 +1,5 @@
+import io
+import re
 import streamlit as st
 import pandas as pd
 from datetime import date
@@ -1162,50 +1164,247 @@ def render_reports():
 def render_export_data():
     page_header(
         "Export Data",
-        "Download operational data for analysis or reporting",
+        "Export one, multiple, or all operational datasets to Excel",
     )
+
+    # =====================================================
+    # AVAILABLE EXPORT DATASETS
+    # =====================================================
 
     datasets = {
-        "Current Inventory": "current_inventory",
-        "Kit Traceability": "kit_traceability",
-        "Pending Transfers": "pending_transfers",
-        "Kit Usage": "kit_usage",
-        "Production Runs": "production_runs",
-        "Production Failures": "production_failures",
-        "Daily Hospital Summaries": "daily_hospital_summaries",
-        "Kit Issues": "kit_issue_history",
-        "Component Issues": "open_kit_issues",
-        "Downtime": "downtime_report",
-        "Backdated Entries": "admin_backdated_entries_with_review",
-        "Audit Log": "audit_log",
+        "Current Inventory":
+            "current_inventory",
+
+        "Kit Traceability":
+            "kit_traceability",
+
+        "Pending Transfers":
+            "pending_transfers",
+
+        "Kit Usage History":
+            "kit_usage",
+
+        "Production Runs":
+            "production_runs",
+
+        "Production Failures":
+            "production_failures",
+
+        "Daily Hospital Summaries":
+            "daily_hospital_summaries",
+
+        "Kit Issues":
+            "kit_issue_history",
+
+        "Component Issues":
+            "open_kit_issues",
+
+        "Expiry Summary":
+            "expiry_dashboard_summary",
+
+        "Downtime":
+            "downtime_report",
+
+        "Backdated Entries":
+            "admin_backdated_entries_with_review",
+
+        "Audit Log":
+            "audit_log",
     }
 
-    dataset_name = st.selectbox("Dataset", list(datasets.keys()))
-    table = datasets[dataset_name]
+    # =====================================================
+    # EXPORT TYPE
+    # =====================================================
+
+    export_type = st.radio(
+        "Export Type",
+        [
+            "Export All",
+            "Export Selected Sections",
+            "Export Single Section",
+        ],
+        horizontal=True,
+    )
+
+    selected_sections = []
+
+    if export_type == "Export All":
+        selected_sections = list(datasets.keys())
+        st.info(
+            f"All {len(selected_sections)} datasets will be exported into one Excel workbook."
+        )
+
+    elif export_type == "Export Selected Sections":
+        selected_sections = st.multiselect(
+            "Select Sections",
+            list(datasets.keys()),
+            placeholder="Choose one or more datasets",
+        )
+
+        if selected_sections:
+            st.caption(f"{len(selected_sections)} section(s) selected.")
+
+    else:
+        selected = st.selectbox(
+            "Section",
+            list(datasets.keys()),
+        )
+        selected_sections = [selected]
+
+    # =====================================================
+    # LOAD DATA
+    # =====================================================
+
+    if not selected_sections:
+        st.warning("Select at least one section to export.")
+        return
+
+    st.divider()
+
+    if export_type != "Export All":
+        st.subheader("Preview")
+
+        preview_section = st.selectbox(
+            "Preview Section",
+            selected_sections,
+        )
+
+        try:
+            preview_data = fetch_data(datasets[preview_section])
+        except Exception as exc:
+            st.error(f"Unable to preview data: {exc}")
+            return
+
+        if preview_data:
+            preview_df = pd.DataFrame(preview_data)
+            st.caption(f"{len(preview_df)} row(s)")
+            st.dataframe(preview_df.head(100), use_container_width=True, hide_index=True)
+        else:
+            st.info("This section currently contains no records.")
+
+    # =====================================================
+    # EXCEL CREATION
+    # =====================================================
+
+    def make_excel(section_names):
+        output = io.BytesIO()
+
+        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+            workbook = writer.book
+
+            header_format = workbook.add_format(
+                {
+                    "bold": True,
+                    "bg_color": "#2563EB",
+                    "font_color": "#FFFFFF",
+                    "border": 1,
+                    "align": "center",
+                    "valign": "vcenter",
+                }
+            )
+
+            date_format = workbook.add_format({"num_format": "yyyy-mm-dd"})
+            datetime_format = workbook.add_format({"num_format": "yyyy-mm-dd hh:mm:ss"})
+
+            exported_count = 0
+
+            for section_name in section_names:
+                table = datasets[section_name]
+
+                try:
+                    data = fetch_data(table)
+                except Exception as exc:
+                    data = [{"Export Error": str(exc)}]
+
+                df = pd.DataFrame(data)
+
+                if df.empty:
+                    df = pd.DataFrame({"Information": ["No records available."]})
+
+                sheet_name = re.sub(r"[\[\]:*?/\\]", "", section_name)[:31]
+
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
+                worksheet = writer.sheets[sheet_name]
+                worksheet.freeze_panes(1, 0)
+
+                for col_num, column in enumerate(df.columns):
+                    worksheet.write(0, col_num, column, header_format)
+
+                if len(df.columns) > 0:
+                    worksheet.autofilter(0, 0, len(df), len(df.columns) - 1)
+
+                for col_num, column in enumerate(df.columns):
+                    values = df[column].astype(str).replace("nan", "")
+                    max_value_length = values.map(len).max() if not values.empty else 0
+                    width = min(max(len(str(column)) + 2, max_value_length + 2, 12), 40)
+                    worksheet.set_column(col_num, col_num, width)
+
+                for col_num, column in enumerate(df.columns):
+                    name = str(column).lower()
+                    if (
+                        "created_at" in name
+                        or "updated_at" in name
+                        or "confirmed_at" in name
+                        or "resolved_at" in name
+                        or name.endswith("_at")
+                    ):
+                        worksheet.set_column(col_num, col_num, 20, datetime_format)
+                    elif "date" in name or name.endswith("_on"):
+                        worksheet.set_column(col_num, col_num, 14, date_format)
+
+                exported_count += 1
+
+            info_sheet = workbook.add_worksheet("Export Info")
+            info_sheet.write("A1", "Medicine Manager Export", workbook.add_format({"bold": True, "font_size": 16}))
+            info_sheet.write("A3", "Export Date", header_format)
+            info_sheet.write("B3", date.today().isoformat())
+            info_sheet.write("A4", "Sections Exported", header_format)
+            info_sheet.write("B4", exported_count)
+            info_sheet.write("A6", "Included Sheets", header_format)
+
+            row = 6
+            for section_name in section_names:
+                info_sheet.write(row, 0, section_name)
+                row += 1
+
+            info_sheet.set_column("A:A", 32)
+            info_sheet.set_column("B:B", 20)
+
+        output.seek(0)
+        return output.getvalue()
+
+    # =====================================================
+    # CREATE EXPORT
+    # =====================================================
+
+    st.divider()
+
+    if export_type == "Export All":
+        button_label = "Prepare Complete Excel Export"
+        filename = f"medicine_manager_full_export_{date.today().isoformat()}.xlsx"
+    elif export_type == "Export Selected Sections":
+        button_label = "Prepare Selected Excel Export"
+        filename = f"medicine_manager_selected_export_{date.today().isoformat()}.xlsx"
+    else:
+        safe_name = selected_sections[0].lower().replace(" ", "_")
+        button_label = "Prepare Excel Export"
+        filename = f"{safe_name}_{date.today().isoformat()}.xlsx"
 
     try:
-        data = fetch_data(table)
+        excel_data = make_excel(selected_sections)
     except Exception as exc:
-        st.error(f"Unable to load export data: {exc}")
+        st.error(f"Unable to create Excel file: {exc}")
         return
 
-    if not data:
-        st.info("No data available for this export.")
-        return
-
-    df = pd.DataFrame(data)
-    st.write(f"**Rows available:** {len(df)}")
-    st.dataframe(df.head(100), use_container_width=True, hide_index=True)
-
-    csv = df.to_csv(index=False).encode("utf-8")
-    safe_name = dataset_name.lower().replace(" ", "_")
     st.download_button(
-        "Download CSV",
-        data=csv,
-        file_name=f"{safe_name}_{date.today().isoformat()}.csv",
-        mime="text/csv",
+        label=button_label,
+        data=excel_data,
+        file_name=filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
+
+    st.caption("Each selected dataset is placed on its own worksheet.")
 
 
 def render_ai_assistant():
