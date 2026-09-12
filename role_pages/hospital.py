@@ -1156,7 +1156,7 @@ def render_expiry():
 
             expired = [
                 row for row in alerts
-                if row.get("expiry_category") == "EXPIRED"
+                if row.get("days_to_expiry", 999) <= 0
             ]
 
             if expired:
@@ -1165,7 +1165,7 @@ def render_expiry():
                     "Expired Kits Requiring Action"
                 )
                 st.caption(
-                    "Only kits whose expiry date has already passed can be marked expired."
+                    "Any kit with 0 days or less to expiry is considered expired and can be marked expired."
                 )
 
                 kit_lookup = {
@@ -1215,7 +1215,7 @@ def render_expiry():
 
             else:
                 st.info(
-                    "Expiry warnings are shown above. No kit has actually expired yet."
+                    "Expiry warnings are shown above. No kit is at 0 days or less to expiry yet."
                 )
 
     with tab2:
@@ -1256,7 +1256,7 @@ def render_expiry():
 
             expired = [
                 row for row in alerts
-                if row.get("expiry_category") == "EXPIRED"
+                if row.get("days_to_expiry", 999) <= 0
             ]
 
             if expired:
@@ -1313,7 +1313,7 @@ def render_expiry():
 
             else:
                 st.info(
-                    "Expiry warnings are shown above. No component has actually expired yet."
+                    "Expiry warnings are shown above. No component is at 0 days or less to expiry yet."
                 )
 
 
