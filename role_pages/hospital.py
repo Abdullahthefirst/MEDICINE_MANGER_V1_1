@@ -1022,48 +1022,167 @@ def render_report_issue():
 
 def render_issues():
     page_header(
-        "Kit & Component Issues",
-        "Track reported kit issues and whole-issue replacement status",
+        "Kit Issues",
+        "Review reported kit and component issues",
     )
 
     hospital_id = get_site_id()
 
     try:
-        open_issues = fetch_data("open_kit_issues")
-        raw_issues = fetch_data("kit_issues")
+        open_rows = fetch_data(
+            "open_kit_issues"
+        )
+
+        history_rows = fetch_data(
+            "kit_issue_history"
+        )
+
     except Exception as exc:
-        st.error(f"Unable to load issue information: {exc}")
+        st.error(
+            f"Unable to load issue information: {exc}"
+        )
         return
 
-    open_issues = [
-        row for row in open_issues if row.get("hospital_site_id") == hospital_id
+    open_rows = [
+        row
+        for row in open_rows
+        if row.get("hospital_site_id")
+        == hospital_id
     ]
 
-    issue_lookup = {row["id"]: row for row in raw_issues}
+    tab1, tab2 = st.tabs(
+        [
+            "Kits",
+            "Components by Kit",
+        ]
+    )
 
-    if not open_issues:
-        st.info("No open kit issues have been reported for this hospital.")
-        return
+    with tab1:
 
-    rows = []
-    for row in open_issues:
-        raw = issue_lookup.get(row.get("issue_id"), {})
-        rows.append(
+        if not open_rows:
+            st.success(
+                "No open kit issues."
+            )
+
+        else:
+            grouped = {}
+
+            for row in open_rows:
+                issue_id = row.get(
+                    "issue_id"
+                )
+
+                if issue_id not in grouped:
+                    grouped[issue_id] = {
+                        "Issue ID":
+                            issue_id,
+
+                        "Kit ID":
+                            row.get("kit_id"),
+
+                        "Kit Type":
+                            row.get("kit_type"),
+
+                        "Issue Date":
+                            row.get("event_date"),
+
+                        "Affected Runs":
+                            row.get(
+                                "runs_affected"
+                            ),
+
+                        "Description":
+                            row.get(
+                                "description"
+                            ),
+                    }
+
+            df = pd.DataFrame(
+                grouped.values()
+            )
+
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    with tab2:
+
+        if not open_rows:
+            st.info(
+                "No component issues are currently open."
+            )
+            return
+
+        kit_ids = sorted(
             {
-                "Issue ID": row.get("issue_id"),
-                "Kit ID": row.get("kit_id"),
-                "Kit Type": row.get("kit_type"),
-                "Issue Date": row.get("event_date"),
-                "Affected Runs": row.get("runs_affected"),
-                "Description": row.get("description"),
-                "Resolution Status": raw.get("resolution_status", "OPEN"),
-                "Items Sent Date": raw.get("warehouse_resolution_date"),
-                "Hospital Confirmed": "Yes" if raw.get("hospital_confirmed_at") else "No",
+                row.get("kit_id")
+                for row in open_rows
+                if row.get("kit_id")
             }
         )
 
-    df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+        selected_kit = st.selectbox(
+            "Kit ID",
+            kit_ids,
+            key="hospital_issue_kit_filter",
+        )
+
+        filtered = [
+            row
+            for row in open_rows
+            if row.get("kit_id")
+            == selected_kit
+        ]
+
+        rows = []
+
+        for row in filtered:
+            rows.append(
+                {
+                    "Issue ID":
+                        row.get("issue_id"),
+
+                    "Kit ID":
+                        row.get("kit_id"),
+
+                    "Kit Type":
+                        row.get("kit_type"),
+
+                    "Component":
+                        row.get(
+                            "component_name"
+                        ),
+
+                    "Catalogue Number":
+                        row.get(
+                            "catalogue_number"
+                        ),
+
+                    "Affected Runs":
+                        row.get(
+                            "runs_affected"
+                        ),
+
+                    "Issue Date":
+                        row.get(
+                            "event_date"
+                        ),
+                }
+            )
+
+        if rows:
+            st.dataframe(
+                pd.DataFrame(rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        else:
+            st.info(
+                "No components are recorded for this kit issue."
+            )
 
 
 # =========================================================
@@ -1401,7 +1520,7 @@ def render_expiry():
 def render_reports():
     page_header(
         "Reports & Analytics",
-        "Performance reports for your hospital",
+        "Hospital operational performance",
     )
 
     report = st.selectbox(
@@ -1417,20 +1536,34 @@ def render_reports():
 
     st.divider()
 
+    c1, c2 = st.columns(2)
+
+    start_date = c1.date_input(
+        "From",
+        value=date.today().replace(day=1),
+        key=f"hospital_report_from_{report}",
+    )
+
+    end_date = c2.date_input(
+        "To",
+        value=date.today(),
+        key=f"hospital_report_to_{report}",
+    )
+
+    if start_date > end_date:
+        st.error("From date cannot be later than To date.")
+        return
+
     if report == "Production Performance":
-        show_production_report()
-
+        show_production_report(None, start_date, end_date)
     elif report == "Patients & Activity":
-        show_patient_report()
-
+        show_patient_report(None, start_date, end_date)
     elif report == "Production Failures":
-        show_failure_report()
-
+        show_failure_report(None, start_date, end_date)
     elif report == "Equipment Downtime":
-        show_downtime_report()
-
+        show_downtime_report(None, start_date, end_date)
     elif report == "Kit Usage History":
-        show_kit_usage_report()
+        show_kit_usage_report(None, start_date, end_date)
 
 
 # =========================================================

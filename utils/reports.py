@@ -445,6 +445,30 @@ def show_failure_report(
             & (df["event_date"].dt.date <= end_date)
         ]
 
+    if "machine" in df.columns:
+        machine_filter = st.selectbox(
+            "Machine",
+            ["All", "ABT", "TRASIS"],
+            key="failure_machine_filter",
+        )
+
+        if machine_filter != "All":
+            df = df[
+                df["machine"].astype(str).str.upper() == machine_filter
+            ]
+
+    if "machine" in df.columns:
+        machine_filter = st.selectbox(
+            "Machine",
+            ["All", "ABT", "TRASIS"],
+            key="failure_machine_filter",
+        )
+
+        if machine_filter != "All":
+            df = df[
+                df["machine"].astype(str).str.upper() == machine_filter
+            ]
+
     if "outcome" in df.columns:
         counts = (
             df["outcome"]
@@ -520,6 +544,24 @@ def show_downtime_report(
             (df["event_date"].dt.date >= start_date)
             & (df["event_date"].dt.date <= end_date)
         ]
+
+    machine_column = None
+    for candidate in ["equipment_type", "machine"]:
+        if candidate in df.columns:
+            machine_column = candidate
+            break
+
+    if machine_column:
+        machine_filter = st.selectbox(
+            "Equipment Type",
+            ["All", "ABT", "TRASIS"],
+            key="downtime_machine_filter",
+        )
+
+        if machine_filter != "All":
+            df = df[
+                df[machine_column].astype(str).str.upper() == machine_filter
+            ]
 
     total_minutes = (
         df["duration_minutes"].sum()

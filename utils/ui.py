@@ -87,3 +87,36 @@ def page_header(title, subtitle=None):
             f'<div class="subtitle">{subtitle}</div>',
             unsafe_allow_html=True,
         )
+
+
+def set_flash(message, kind="success"):
+    import streamlit as st
+
+    st.session_state["_flash_message"] = message
+    st.session_state["_flash_kind"] = kind
+
+
+def show_flash():
+    import streamlit as st
+
+    message = st.session_state.pop(
+        "_flash_message",
+        None,
+    )
+
+    kind = st.session_state.pop(
+        "_flash_kind",
+        "success",
+    )
+
+    if not message:
+        return
+
+    if kind == "success":
+        st.success(message)
+    elif kind == "warning":
+        st.warning(message)
+    elif kind == "error":
+        st.error(message)
+    else:
+        st.info(message)

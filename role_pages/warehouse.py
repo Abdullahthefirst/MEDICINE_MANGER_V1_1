@@ -8,7 +8,11 @@ from utils.auth import (
     get_site_id,
 )
 from utils.errors import friendly_error
-from utils.ui import page_header
+from utils.ui import (
+    page_header,
+    set_flash,
+    show_flash,
+)
 
 
 def fetch_data(table, columns="*"):
@@ -255,8 +259,8 @@ def render_add_inventory():
                 },
             ).execute()
 
-            st.success(
-                f"{kit_id} added successfully."
+            set_flash(
+                f"Inventory item {kit_id} added successfully."
             )
 
             st.rerun()
@@ -461,8 +465,8 @@ def render_transfer():
                 },
             ).execute()
 
-            st.success(
-                f"Transfer created for "
+            set_flash(
+                f"Transfer initiated successfully for "
                 f"{len(kit_ids)} kit(s)."
             )
 
@@ -481,7 +485,7 @@ def render_transfer():
 def render_transfers():
     page_header(
         "Transfers",
-        "Pending and partially received transfers",
+        "Kits still awaiting hospital receipt",
     )
 
     try:
@@ -498,13 +502,18 @@ def render_transfers():
     warehouse_id = get_site_id()
 
     transfers = [
-        row for row in transfers
-        if row.get("source_site_id") == warehouse_id
+        row
+        for row in transfers
+        if (
+            row.get("source_site_id")
+            == warehouse_id
+            and not row.get("received")
+        )
     ]
 
     if not transfers:
         st.success(
-            "No pending transfers from this warehouse."
+            "No kits are currently awaiting receipt."
         )
         return
 
@@ -515,9 +524,9 @@ def render_transfers():
         "transfer_date",
         "destination_site",
         "kit_id",
+        "received",
         "kit_type",
         "transfer_status",
-        "received",
         "received_at",
     ]
 
@@ -540,115 +549,245 @@ def render_transfers():
 def render_issues():
     page_header(
         "Kit Issues",
-        "Resolve reported issues by sending replacement items",
+        "Resolve reported kit issues and monitor hospital confirmation",
     )
 
     try:
-        issues = fetch_data("open_kit_issues")
+        open_rows = fetch_data(
+            "open_kit_issues"
+        )
+
+        raw_issues = fetch_data(
+            "kit_issues"
+        )
+
     except Exception as exc:
-        st.error(f"Unable to load issues: {exc}")
+        st.error(
+            f"Unable to load issues: {exc}"
+        )
         return
 
-    if not issues:
-        st.success("No open issues.")
-        return
+    issue_lookup = {
+        row["id"]: row
+        for row in raw_issues
+    }
 
     grouped = {}
 
-    for row in issues:
-        issue_id = row["issue_id"]
+    for row in open_rows:
+        issue_id = row.get(
+            "issue_id"
+        )
+
+        raw = issue_lookup.get(
+            issue_id,
+            {},
+        )
 
         if issue_id not in grouped:
             grouped[issue_id] = {
-                "issue_id": issue_id,
-                "kit_id": row.get("kit_id"),
-                "kit_type": row.get("kit_type"),
-                "hospital": row.get("hospital"),
-                "event_date": row.get("event_date"),
-                "runs_affected": row.get("runs_affected"),
-                "description": row.get("description"),
-                "components": [],
+                "issue_id":
+                    issue_id,
+
+                "kit_id":
+                    row.get("kit_id"),
+
+                "kit_type":
+                    row.get("kit_type"),
+
+                "hospital":
+                    row.get("hospital"),
+
+                "event_date":
+                    row.get("event_date"),
+
+                "runs_affected":
+                    row.get(
+                        "runs_affected"
+                    ),
+
+                "description":
+                    row.get("description"),
+
+                "resolution_status":
+                    raw.get(
+                        "resolution_status",
+                        "OPEN",
+                    ),
+
+                "warehouse_resolution_date":
+                    raw.get(
+                        "warehouse_resolution_date"
+                    ),
+
+                "warehouse_resolution_notes":
+                    raw.get(
+                        "warehouse_resolution_notes"
+                    ),
+
+                "components":
+                    [],
             }
 
-        grouped[issue_id]["components"].append(row.get("component_name"))
-
-    issue_lookup = {}
-
-    for issue_id, issue in grouped.items():
-        label = (
-            f'Issue #{issue_id} — '
-            f'{issue["kit_id"]} — '
-            f'{issue["hospital"]}'
-        )
-        issue_lookup[label] = issue
-
-    selected_label = st.selectbox(
-        "Select Issue",
-        list(issue_lookup.keys()),
-    )
-
-    issue = issue_lookup[selected_label]
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Kit ID", issue["kit_id"])
-    c2.metric("Kit Type", issue["kit_type"])
-    c3.metric("Hospital", issue["hospital"])
-    c4.metric("Affected Runs", issue["runs_affected"])
-
-    st.write(f"**Reported Date:** {issue['event_date']}")
-
-    if issue.get("description"):
-        st.write(f"**Description:** {issue['description']}")
-
-    st.subheader("Reported Components")
-    components = [comp for comp in issue["components"] if comp]
-    for comp in components:
-        st.write(f"- {comp}")
-
-    st.divider()
-    st.subheader("Resolve Issue")
-    st.caption(
-        "Use this when the required replacement items have been sent to the hospital."
-    )
-
-    with st.form("send_issue_resolution"):
-        resolution_date = st.date_input(
-            "Items Sent Date",
-            value=date.today(),
+        component = row.get(
+            "component_name"
         )
 
-        notes = st.text_area(
-            "Resolution Notes",
-            placeholder="Example: Replacement components dispatched to hospital.",
-        )
-
-        submitted = st.form_submit_button(
-            "Set as Resolved by Sending Items",
-            use_container_width=True,
-        )
-
-    if submitted:
-        try:
-            supabase = get_authenticated_client()
-            supabase.rpc(
-                "send_issue_replacement",
-                {
-                    "p_issue_id": issue["issue_id"],
-                    "p_resolution_date": resolution_date.isoformat(),
-                    "p_notes": notes.strip() or None,
-                },
-            ).execute()
-
-            st.success(
-                "Issue updated successfully. "
-                "Replacement items have been marked as sent "
-                "and are now awaiting hospital confirmation."
+        if component:
+            grouped[
+                issue_id
+            ]["components"].append(
+                component
             )
 
-            st.rerun()
+    issues = list(
+        grouped.values()
+    )
 
-        except Exception as exc:
-            st.error(f"Unable to update issue: {exc}")
+    to_resolve = [
+        issue
+        for issue in issues
+        if issue.get(
+            "resolution_status"
+        )
+        not in (
+            "AWAITING_HOSPITAL_CONFIRMATION",
+            "RESOLVED",
+        )
+    ]
+
+    waiting = [
+        issue
+        for issue in issues
+        if issue.get(
+            "resolution_status"
+        )
+        == "AWAITING_HOSPITAL_CONFIRMATION"
+    ]
+
+    tab1, tab2 = st.tabs(
+        [
+            "Resolve Issue",
+            "Waiting Confirmation",
+        ]
+    )
+
+    with tab1:
+
+        if not to_resolve:
+            st.success(
+                "No unresolved issues are waiting for warehouse action."
+            )
+
+        else:
+            option_lookup = {}
+
+            for issue in to_resolve:
+                label = (
+                    f'Issue #{issue["issue_id"]} — '
+                    f'{issue["kit_id"]} — '
+                    f'{issue["hospital"]}'
+                )
+                option_lookup[label] = issue
+
+            selected_label = st.selectbox(
+                "Issue",
+                list(option_lookup.keys()),
+                key="warehouse_issue_resolve",
+            )
+
+            issue = option_lookup[selected_label]
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Kit ID", issue["kit_id"])
+            c2.metric("Kit Type", issue["kit_type"])
+            c3.metric("Hospital", issue["hospital"])
+            c4.metric("Affected Runs", issue["runs_affected"])
+
+            st.write(f'**Issue Date:** {issue["event_date"]}')
+
+            if issue.get("description"):
+                st.write(f'**Description:** {issue["description"]}')
+
+            st.subheader("Components in Issue")
+
+            if issue["components"]:
+                for component in sorted(set(issue["components"])):
+                    st.write(f"- {component}")
+            else:
+                st.info("No component names available.")
+
+            st.divider()
+
+            with st.form("warehouse_send_resolution"):
+                sent_date = st.date_input(
+                    "Items Sent Date",
+                    value=date.today(),
+                )
+
+                notes = st.text_area(
+                    "Resolution Notes",
+                    placeholder="Replacement items dispatched to hospital.",
+                )
+
+                submitted = st.form_submit_button(
+                    "Set as Resolved by Sending Items",
+                    use_container_width=True,
+                )
+
+            if submitted:
+                try:
+                    supabase = get_authenticated_client()
+                    supabase.rpc(
+                        "send_issue_replacement",
+                        {
+                            "p_issue_id": issue["issue_id"],
+                            "p_resolution_date": sent_date.isoformat(),
+                            "p_notes": notes.strip() or None,
+                        },
+                    ).execute()
+
+                    set_flash(
+                        "Replacement items marked as sent. "
+                        "The issue is now awaiting hospital confirmation."
+                    )
+
+                    st.rerun()
+
+                except Exception as exc:
+                    st.error(
+                        f"Unable to resolve issue: {exc}"
+                    )
+
+    with tab2:
+
+        if not waiting:
+            st.info(
+                "No issues are waiting for hospital confirmation."
+            )
+
+        else:
+            rows = []
+
+            for issue in waiting:
+                rows.append(
+                    {
+                        "Issue ID": issue["issue_id"],
+                        "Hospital": issue["hospital"],
+                        "Kit ID": issue["kit_id"],
+                        "Kit Type": issue["kit_type"],
+                        "Affected Runs": issue["runs_affected"],
+                        "Items Sent": issue.get("warehouse_resolution_date"),
+                        "Notes": issue.get("warehouse_resolution_notes"),
+                        "Status": "Waiting Hospital Confirmation",
+                    }
+                )
+
+            st.dataframe(
+                pd.DataFrame(rows),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 # =========================================================
@@ -907,6 +1046,7 @@ def render_expiry():
 
 def render():
     require_role("warehouse_manager")
+    show_flash()
 
     with st.sidebar:
         st.markdown("### Warehouse")

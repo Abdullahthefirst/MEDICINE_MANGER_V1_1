@@ -1287,6 +1287,8 @@ def render_export_data():
     # =====================================================
 
     def make_excel(section_names):
+        import json
+
         output = io.BytesIO()
 
         with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
@@ -1303,10 +1305,9 @@ def render_export_data():
                 }
             )
 
-            date_format = workbook.add_format({"num_format": "yyyy-mm-dd"})
-            datetime_format = workbook.add_format({"num_format": "yyyy-mm-dd hh:mm:ss"})
+            info_format = workbook.add_format({"bold": True})
 
-            exported_count = 0
+            exported_sections = []
 
             for section_name in section_names:
                 table = datasets[section_name]
@@ -1321,54 +1322,72 @@ def render_export_data():
                 if df.empty:
                     df = pd.DataFrame({"Information": ["No records available."]})
 
-                sheet_name = re.sub(r"[\[\]:*?/\\]", "", section_name)[:31]
+                def clean_value(value):
+                    if value is None:
+                        return ""
+                    if isinstance(value, (dict, list, tuple, set)):
+                        try:
+                            return json.dumps(value, default=str, ensure_ascii=False)
+                        except Exception:
+                            return str(value)
+                    return value
+
+                for column in df.columns:
+                    df[column] = df[column].map(clean_value)
+
+                sheet_name = re.sub(r"[\[\]:*?/\\]", "", str(section_name))[:31]
+                original_sheet_name = sheet_name
+                counter = 2
+
+                while sheet_name in writer.sheets:
+                    suffix = f" {counter}"
+                    sheet_name = (original_sheet_name[:31 - len(suffix)] + suffix)
+                    counter += 1
 
                 df.to_excel(writer, sheet_name=sheet_name, index=False)
                 worksheet = writer.sheets[sheet_name]
                 worksheet.freeze_panes(1, 0)
 
                 for col_num, column in enumerate(df.columns):
-                    worksheet.write(0, col_num, column, header_format)
+                    worksheet.write(0, col_num, str(column), header_format)
 
                 if len(df.columns) > 0:
                     worksheet.autofilter(0, 0, len(df), len(df.columns) - 1)
 
-                for col_num, column in enumerate(df.columns):
-                    values = df[column].astype(str).replace("nan", "")
-                    max_value_length = values.map(len).max() if not values.empty else 0
-                    width = min(max(len(str(column)) + 2, max_value_length + 2, 12), 40)
+                for col_num in range(len(df.columns)):
+                    column_name = str(df.columns[col_num])
+                    lengths = [len(column_name)]
+
+                    for value in df.iloc[:, col_num].tolist():
+                        if value is None:
+                            lengths.append(0)
+                        else:
+                            try:
+                                lengths.append(len(str(value)))
+                            except Exception:
+                                lengths.append(10)
+
+                    width = min(max(lengths) + 2, 45)
+                    width = max(width, 12)
                     worksheet.set_column(col_num, col_num, width)
 
-                for col_num, column in enumerate(df.columns):
-                    name = str(column).lower()
-                    if (
-                        "created_at" in name
-                        or "updated_at" in name
-                        or "confirmed_at" in name
-                        or "resolved_at" in name
-                        or name.endswith("_at")
-                    ):
-                        worksheet.set_column(col_num, col_num, 20, datetime_format)
-                    elif "date" in name or name.endswith("_on"):
-                        worksheet.set_column(col_num, col_num, 14, date_format)
+                exported_sections.append(section_name)
 
-                exported_count += 1
+            info = workbook.add_worksheet("Export Info")
+            info.write("A1", "Medicine Manager Export", workbook.add_format({"bold": True, "font_size": 16}))
+            info.write("A3", "Export Date", info_format)
+            info.write("B3", date.today().isoformat())
+            info.write("A4", "Number of Sections", info_format)
+            info.write("B4", len(exported_sections))
+            info.write("A6", "Included Sections", info_format)
 
-            info_sheet = workbook.add_worksheet("Export Info")
-            info_sheet.write("A1", "Medicine Manager Export", workbook.add_format({"bold": True, "font_size": 16}))
-            info_sheet.write("A3", "Export Date", header_format)
-            info_sheet.write("B3", date.today().isoformat())
-            info_sheet.write("A4", "Sections Exported", header_format)
-            info_sheet.write("B4", exported_count)
-            info_sheet.write("A6", "Included Sheets", header_format)
+            row_num = 6
+            for section_name in exported_sections:
+                info.write(row_num, 0, str(section_name))
+                row_num += 1
 
-            row = 6
-            for section_name in section_names:
-                info_sheet.write(row, 0, section_name)
-                row += 1
-
-            info_sheet.set_column("A:A", 32)
-            info_sheet.set_column("B:B", 20)
+            info.set_column("A:A", 35)
+            info.set_column("B:B", 20)
 
         output.seek(0)
         return output.getvalue()
