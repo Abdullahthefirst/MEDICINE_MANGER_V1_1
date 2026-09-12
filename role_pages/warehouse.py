@@ -640,8 +640,11 @@ def render_issues():
             ).execute()
 
             st.success(
-                "Issue updated. Replacement items have been marked as sent and the hospital must now confirm."
+                "Issue updated successfully. "
+                "Replacement items have been marked as sent "
+                "and are now awaiting hospital confirmation."
             )
+
             st.rerun()
 
         except Exception as exc:
