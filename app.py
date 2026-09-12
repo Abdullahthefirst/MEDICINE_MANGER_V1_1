@@ -94,15 +94,15 @@ def authenticated_app():
             st.rerun()
 
     if role == "admin":
-        from pages.admin import render
+        from role_pages.admin import render
         render()
 
     elif role == "warehouse_manager":
-        from pages.warehouse import render
+        from role_pages.warehouse import render
         render()
 
     elif role == "hospital_manager":
-        from pages.hospital import render
+        from role_pages.hospital import render
         render()
 
     else:
