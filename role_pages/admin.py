@@ -5,6 +5,13 @@ from utils.auth import (
     require_role,
     get_authenticated_client,
 )
+from utils.reports import (
+    show_production_report,
+    show_patient_report,
+    show_failure_report,
+    show_downtime_report,
+    show_kit_usage_report,
+)
 from utils.ui import page_header
 
 
@@ -781,6 +788,41 @@ def render_audit():
 # MAIN ADMIN ROUTER
 # ---------------------------------------------------------
 
+def render_reports():
+    page_header(
+        "Reports & Analytics",
+        "System-wide operational performance",
+    )
+
+    report = st.selectbox(
+        "Report",
+        [
+            "Production Performance",
+            "Patients & Activity",
+            "Production Failures",
+            "Equipment Downtime",
+            "Kit Consumption",
+        ],
+    )
+
+    st.divider()
+
+    if report == "Production Performance":
+        show_production_report()
+
+    elif report == "Patients & Activity":
+        show_patient_report()
+
+    elif report == "Production Failures":
+        show_failure_report()
+
+    elif report == "Equipment Downtime":
+        show_downtime_report()
+
+    elif report == "Kit Consumption":
+        show_kit_usage_report()
+
+
 def render():
     require_role("admin")
 
@@ -797,6 +839,7 @@ def render():
                 "Expiry",
                 "Production",
                 "Downtime",
+                "Reports & Analytics",
                 "Users",
                 "Sites",
                 "Backdated Entries",
@@ -826,6 +869,9 @@ def render():
 
     elif section == "Downtime":
         render_downtime()
+
+    elif section == "Reports & Analytics":
+        render_reports()
 
     elif section == "Users":
         render_users()

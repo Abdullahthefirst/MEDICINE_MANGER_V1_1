@@ -7,6 +7,13 @@ from utils.auth import (
     get_authenticated_client,
     get_site_id,
 )
+from utils.reports import (
+    show_production_report,
+    show_patient_report,
+    show_failure_report,
+    show_downtime_report,
+    show_kit_usage_report,
+)
 from utils.ui import page_header
 
 
@@ -1218,6 +1225,41 @@ def render_expiry():
             )
 
 
+def render_reports():
+    page_header(
+        "Reports & Analytics",
+        "Performance reports for your hospital",
+    )
+
+    report = st.selectbox(
+        "Report",
+        [
+            "Production Performance",
+            "Patients & Activity",
+            "Production Failures",
+            "Equipment Downtime",
+            "Kit Consumption",
+        ],
+    )
+
+    st.divider()
+
+    if report == "Production Performance":
+        show_production_report()
+
+    elif report == "Patients & Activity":
+        show_patient_report()
+
+    elif report == "Production Failures":
+        show_failure_report()
+
+    elif report == "Equipment Downtime":
+        show_downtime_report()
+
+    elif report == "Kit Consumption":
+        show_kit_usage_report()
+
+
 # =========================================================
 # MAIN ROUTER
 # =========================================================
@@ -1239,6 +1281,7 @@ def render():
                 "Report Kit Component Issue",
                 "Kit Issues",
                 "Downtime",
+                "Reports & Analytics",
                 "Expiry Alerts",
             ],
             label_visibility="collapsed",
@@ -1268,6 +1311,9 @@ def render():
 
     elif section == "Downtime":
         render_downtime()
+
+    elif section == "Reports & Analytics":
+        render_reports()
 
     elif section == "Expiry Alerts":
         render_expiry()
