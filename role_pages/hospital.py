@@ -166,12 +166,12 @@ def render_overview():
 
 
 # =========================================================
-# CONFIRM RECEIVING
+# DELIVERY CONFIRMATION
 # =========================================================
 
-def render_receiving():
+def render_delivery_confirmation():
     page_header(
-        "Confirm Receiving",
+        "Delivery Confirmation",
         "Select all kits physically received from the warehouse",
     )
 
@@ -255,6 +255,105 @@ def render_receiving():
             st.warning("Some kits could not be confirmed:\n\n" + "\n\n".join(failed))
 
         st.rerun()
+
+
+# =========================================================
+# ISSUE RESOLUTION CONFIRMATION
+# =========================================================
+
+def render_issue_resolution_confirmation():
+    hospital_id = get_site_id()
+
+    try:
+        supabase = get_authenticated_client()
+        response = (
+            supabase
+            .table("kit_issues")
+            .select(
+                "id,kit_id,hospital_site_id,event_date,runs_affected,description,"
+                "resolution_status,warehouse_resolution_date,warehouse_resolution_notes,"
+                "kits(kit_id,inventory_templates(name))"
+            )
+            .eq("hospital_site_id", hospital_id)
+            .eq("status", "OPEN")
+            .eq("resolution_status", "AWAITING_HOSPITAL_CONFIRMATION")
+            .execute()
+        )
+        issues = response.data or []
+    except Exception as exc:
+        st.error(f"Unable to load resolution confirmations: {exc}")
+        return
+
+    if not issues:
+        st.success("No resolved issues are awaiting confirmation.")
+        return
+
+    option_lookup = {}
+    for row in issues:
+        kit_info = row.get("kits") or {}
+        label = f'Issue #{row["id"]} — {kit_info.get("kit_id", "")}'
+        option_lookup[label] = row
+
+    selected_label = st.selectbox("Issue", list(option_lookup.keys()))
+    selected = option_lookup[selected_label]
+
+    kit_info = selected.get("kits") or {}
+    template_info = kit_info.get("inventory_templates") or {}
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Kit ID", kit_info.get("kit_id", "-"))
+    c2.metric("Kit Type", template_info.get("name", "-"))
+    c3.metric("Affected Runs", selected.get("runs_affected", 0))
+
+    st.write(f'**Issue Date:** {selected.get("event_date", "")}')
+    st.write(f'**Items Sent Date:** {selected.get("warehouse_resolution_date", "")}')
+
+    if selected.get("warehouse_resolution_notes"):
+        st.info(selected["warehouse_resolution_notes"])
+
+    st.warning(
+        "Confirm only after the replacement items have physically arrived and the issue is resolved."
+    )
+
+    confirm = st.button(
+        "Confirm Issue Resolved",
+        type="primary",
+        use_container_width=True,
+    )
+
+    if confirm:
+        try:
+            supabase = get_authenticated_client()
+            supabase.rpc(
+                "confirm_issue_resolution",
+                {"p_issue_id": selected["id"]},
+            ).execute()
+            st.success("Issue resolution confirmed. The kit is now available again.")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Unable to confirm resolution: {exc}")
+
+
+# =========================================================
+# CONFIRMATION
+# =========================================================
+
+def render_confirmation():
+    page_header(
+        "Confirmation",
+        "Confirm deliveries and resolved kit issues",
+    )
+
+    tab1, tab2 = st.tabs([
+        "Delivery Confirmation",
+        "Issue Resolution Confirmation",
+    ])
+
+    with tab1:
+        render_delivery_confirmation()
+
+    with tab2:
+        render_issue_resolution_confirmation()
 
 
 # =========================================================
@@ -1416,7 +1515,7 @@ def render():
             "Navigation",
             [
                 "Overview",
-                "Confirm Receiving",
+                "Confirmation",
                 "Hospital Inventory",
                 "Daily Summary",
                 "Production Runs",
@@ -1433,8 +1532,8 @@ def render():
     if section == "Overview":
         render_overview()
 
-    elif section == "Confirm Receiving":
-        render_receiving()
+    elif section == "Confirmation":
+        render_confirmation()
 
     elif section == "Hospital Inventory":
         render_inventory()

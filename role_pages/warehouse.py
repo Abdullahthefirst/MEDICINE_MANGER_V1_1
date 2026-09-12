@@ -534,93 +534,118 @@ def render_transfers():
 
 
 # =========================================================
-# KIT COMPONENT ISSUES
+# KIT ISSUES
 # =========================================================
 
 def render_issues():
     page_header(
-        "Component Issues",
-        "Supply replacements for defective kit components",
+        "Kit Issues",
+        "Resolve reported issues by sending replacement items",
     )
 
     try:
-        data = fetch_data("kit_issue_component_status")
+        issues = fetch_data("open_kit_issues")
     except Exception as exc:
-        st.error(f"Unable to load component issues: {exc}")
+        st.error(f"Unable to load issues: {exc}")
         return
 
-    data = [row for row in data if row.get("issue_status") == "OPEN"]
-
-    if not data:
-        st.success("No open component issues.")
+    if not issues:
+        st.success("No open issues.")
         return
 
-    df = pd.DataFrame(data)
+    grouped = {}
 
-    display_columns = [
-        "issue_id",
-        "hospital",
-        "kit_id",
-        "kit_type",
-        "component_name",
-        "catalogue_number",
-        "runs_affected",
-        "component_resolution_status",
-    ]
+    for row in issues:
+        issue_id = row["issue_id"]
 
-    st.dataframe(
-        df[[col for col in display_columns if col in df.columns]],
-        use_container_width=True,
-        hide_index=True,
+        if issue_id not in grouped:
+            grouped[issue_id] = {
+                "issue_id": issue_id,
+                "kit_id": row.get("kit_id"),
+                "kit_type": row.get("kit_type"),
+                "hospital": row.get("hospital"),
+                "event_date": row.get("event_date"),
+                "runs_affected": row.get("runs_affected"),
+                "description": row.get("description"),
+                "components": [],
+            }
+
+        grouped[issue_id]["components"].append(row.get("component_name"))
+
+    issue_lookup = {}
+
+    for issue_id, issue in grouped.items():
+        label = (
+            f'Issue #{issue_id} — '
+            f'{issue["kit_id"]} — '
+            f'{issue["hospital"]}'
+        )
+        issue_lookup[label] = issue
+
+    selected_label = st.selectbox(
+        "Select Issue",
+        list(issue_lookup.keys()),
     )
 
-    unresolved = [
-        row for row in data
-        if row.get("component_resolution_status") == "AWAITING_WAREHOUSE_REPLACEMENT"
-    ]
+    issue = issue_lookup[selected_label]
 
-    if not unresolved:
-        st.info("All replacements have been supplied. They are waiting for hospital confirmation.")
-        return
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Kit ID", issue["kit_id"])
+    c2.metric("Kit Type", issue["kit_type"])
+    c3.metric("Hospital", issue["hospital"])
+    c4.metric("Affected Runs", issue["runs_affected"])
+
+    st.write(f"**Reported Date:** {issue['event_date']}")
+
+    if issue.get("description"):
+        st.write(f"**Description:** {issue['description']}")
+
+    st.subheader("Reported Components")
+    components = [comp for comp in issue["components"] if comp]
+    for comp in components:
+        st.write(f"- {comp}")
 
     st.divider()
-    st.subheader("Supply Replacement")
+    st.subheader("Resolve Issue")
+    st.caption(
+        "Use this when the required replacement items have been sent to the hospital."
+    )
 
-    option_lookup = {}
-    for row in unresolved:
-        label = (
-            f'Issue #{row["issue_id"]} — '
-            f'{row["kit_id"]} — '
-            f'{row["component_name"]} — '
-            f'{row["hospital"]}'
+    with st.form("send_issue_resolution"):
+        resolution_date = st.date_input(
+            "Items Sent Date",
+            value=date.today(),
         )
-        option_lookup[label] = row
 
-    with st.form("warehouse_component_resolution"):
-        selected_label = st.selectbox("Component", list(option_lookup.keys()))
-        quantity = st.number_input("Replacement Quantity", min_value=1, value=1, step=1)
-        resolution_date = st.date_input("Replacement Date", value=date.today())
-        notes = st.text_area("Warehouse Notes", placeholder="Replacement supplied / dispatched.")
-        submitted = st.form_submit_button("Confirm Replacement Supplied", use_container_width=True)
+        notes = st.text_area(
+            "Resolution Notes",
+            placeholder="Example: Replacement components dispatched to hospital.",
+        )
+
+        submitted = st.form_submit_button(
+            "Set as Resolved by Sending Items",
+            use_container_width=True,
+        )
 
     if submitted:
-        selected = option_lookup[selected_label]
         try:
             supabase = get_authenticated_client()
             supabase.rpc(
-                "resolve_kit_issue_component",
+                "send_issue_replacement",
                 {
-                    "p_issue_id": selected["issue_id"],
-                    "p_kit_component_id": selected["kit_component_id"],
-                    "p_notes": notes.strip() or None,
-                    "p_quantity": int(quantity),
+                    "p_issue_id": issue["issue_id"],
                     "p_resolution_date": resolution_date.isoformat(),
+                    "p_notes": notes.strip() or None,
                 },
             ).execute()
-            st.success("Replacement recorded. The hospital must now confirm receipt before the kit can be released.")
+
+            st.success(
+                "Issue updated. Replacement items have been marked as sent and the hospital must now confirm."
+            )
             st.rerun()
+
         except Exception as exc:
-            st.error(f"Unable to record replacement: {exc}")
+            st.error(f"Unable to update issue: {exc}")
 
 
 # =========================================================
